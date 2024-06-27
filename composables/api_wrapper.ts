@@ -31,7 +31,7 @@ import {
   type v2SearchResourcesResponse,
   type v2User
 } from "./aruna_api_json"
-import {type ObjectInfo, toObjectInfo} from "~/composables/proto_conversions";
+import {type ObjectInfo, type EndpointInfo, toObjectInfo} from "~/composables/proto_conversions";
 import type {ArunaError} from "~/composables/ArunaError";
 
 export async function searchResources(query: string): Promise<v2SearchResourcesResponse> {
