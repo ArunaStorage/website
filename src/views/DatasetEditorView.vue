@@ -34,6 +34,7 @@ import { slugify } from '@/lib/profiles/emit'
 import { isAssignableProfile } from '@/lib/profiles/assignable'
 import { loadVocabIndex, type VocabIndex } from '@/lib/profiles/vocabulary'
 import { collectIssues, rejectionIssues, type WriteIssue } from '@/lib/crate/issues'
+import type { MetadataProfile } from '@/data/types'
 import { joinPath, splitPath } from '@/lib/crate/paths'
 import { applyProfile, clearProfile, profileExpectation, seedNewEntities, unseedProfile } from '@/lib/crate/profileSeed'
 import {
@@ -226,19 +227,27 @@ function declaredIris(): Set<string> {
   return new Set((rootEntity(draft.value)?.properties.conformsTo ?? []).map((value) => value.value))
 }
 
-function declaredProfile(): string {
+// Every IRI a crate may name a profile by: the reference form the node
+// resolves, the profile URI and the legacy graph IRI.
+function profileIris(profile: MetadataProfile): string[] {
+  const iris = [profileReferenceIri(profile), profile.profileUri, profile.graphIri]
+  return iris.filter((iri): iri is string => Boolean(iri))
+}
+
+function declaredIriOf(profile?: MetadataProfile): string | undefined {
+  if (!profile) return undefined
   const declared = declaredIris()
-  return profiles.value.find((profile) => {
-    const iri = profileReferenceIri(profile)
-    return Boolean(iri && declared.has(iri))
-  })?.id ?? ''
+  return profileIris(profile).find((iri) => declared.has(iri))
+}
+
+function declaredProfile(): string {
+  return profiles.value.find((profile) => declaredIriOf(profile))?.id ?? ''
 }
 
 // The picker follows what the root declares, so an import, a hand-edited
 // conformsTo row or a profile list that resolves late cannot leave it stale.
 function syncProfileId() {
-  const current = profileReferenceIri(selectedProfile.value)
-  if (current && declaredIris().has(current)) return
+  if (declaredIriOf(selectedProfile.value)) return
   profileId.value = declaredProfile()
 }
 watch([profiles, () => rootEntity(draft.value)?.properties.conformsTo], syncProfileId)
@@ -361,6 +370,16 @@ function imported(next: CrateDraft) {
   selected.value = rootId(draft.value)
   preview.reset()
   syncProfileId()
+  // The node only reads a reference-form tag; a plain string or a legacy IRI
+  // leaves the crate unprofiled, so the import declares the recognized profile
+  // exactly as a pick does.
+  const profile = selectedProfile.value
+  const declared = declaredIriOf(profile)
+  if (profile && declared) {
+    preferredProfileInitialized.value = true
+    draft.value = applyProfile(draft.value, profile, profileReferenceIri(profile), declared)
+    pendingSeed.value = hasRules(expectation.value) ? '' : profile.id
+  }
   draft.value = alignValueKinds(draft.value, vocab.value, expectation.value)
 }
 

@@ -1238,6 +1238,48 @@ describe('DatasetEditorView', () => {
     mounted.app.unmount()
   })
 
+  it('declares an imported profile the node can read', async () => {
+    const iri = 'https://example.test/profiles/old'
+    profiles.value = [profileFixture('old', 'Old', [], ['identifier'])]
+    importDraft.value = Editor.setProperty(seeded(Editor.newDraft()), './', 'conformsTo', [
+      { kind: 'url', value: iri },
+    ])
+    const mounted = await mountApp(DatasetEditorView)
+
+    await click(button(mounted.root, 'Import crate'))
+    await flush()
+    expect(content(mounted.root)).toContain('Declared old')
+    expect(content(mounted.root)).toContain('identifier')
+    const checked = previewDebounced.mock.lastCall?.[0]['@graph'] as Array<Record<string, unknown>>
+    expect(checked.find((entity) => entity['@id'] === './')?.conformsTo).toEqual({ '@id': iri })
+
+    await click(button(mounted.root, 'Create dataset'))
+    await flush()
+    const graph = createMetadata.mock.calls[0][0].rocrate['@graph'] as Array<Record<string, unknown>>
+    expect(graph.find((entity) => entity['@id'] === './')?.conformsTo).toEqual({ '@id': iri })
+    mounted.app.unmount()
+  })
+
+  it('recognizes the graph IRI of an imported profile', async () => {
+    const graphIri = 'https://example.test/graphs/old'
+    profiles.value = [{ ...profileFixture('old', 'Old'), graphIri }]
+    importDraft.value = Editor.setProperty(seeded(Editor.newDraft()), './', 'conformsTo', [
+      { kind: 'reference', value: graphIri },
+    ])
+    const mounted = await mountApp(DatasetEditorView)
+
+    await click(button(mounted.root, 'Import crate'))
+    await flush()
+    expect(content(mounted.root)).toContain('Declared old')
+
+    await click(button(mounted.root, 'Create dataset'))
+    await flush()
+    const graph = createMetadata.mock.calls[0][0].rocrate['@graph'] as Array<Record<string, unknown>>
+    expect(graph.find((entity) => entity['@id'] === './')?.conformsTo)
+      .toEqual({ '@id': 'https://example.test/profiles/old' })
+    mounted.app.unmount()
+  })
+
   it('resolves a declared profile that loads after the dataset', async () => {
     const stored = Editor.setProperty(seeded(Editor.newDraft()), './', 'conformsTo', [
       { kind: 'reference', value: 'https://example.test/profiles/old' },
