@@ -355,7 +355,8 @@ async function submit() {
       customShapesText: builder.customShapesText.trim() ? builder.customShapesText : undefined,
     }
     // Public profiles publish mode/schema/html/shapes to S3 and reference them
-    // by DRS id + contentUrl; private profiles keep the artifacts embedded as text.
+    // by DRS id + contentUrl; the shapes text also stays embedded for the node's
+    // validation. Private profiles keep every artifact embedded as text.
     // A destination that resolves to today's default is passed as undefined so
     // the default publish path stays byte-identical.
     const chosenBucket = selectedDestBucket.value

@@ -51,8 +51,8 @@ export interface BuildProfileCrateInput extends ProfileBasics {
   // the shapes generated from editable rules.
   customShapesText?: string
   // When set, the artifact content lives on S3 (public profiles) and the File
-  // entities reference it instead of embedding `text`. Private profiles keep
-  // the embedded form so nothing private ever depends on a public bucket.
+  // entities reference it instead of embedding `text`; only the shapes stay
+  // embedded, because the node validates from the document alone.
   externalArtifacts?: ExternalProfileArtifacts
 }
 
@@ -179,7 +179,10 @@ export function buildProfileCrate(input: BuildProfileCrateInput): Record<string,
         name: `${input.name} SHACL Shapes`,
         encodingFormat: 'text/turtle',
         conformsTo: { '@id': SHACL_NS },
-        ...(external ? externalFileProps(external.shapes) : { text: shapes }),
+        // The node validates from the stored document and never fetches contentUrl,
+        // so the shapes stay embedded even when the public copy lives on S3.
+        ...(external ? externalFileProps(external.shapes) : {}),
+        text: shapes,
       },
       {
         '@id': '#profile-resource',

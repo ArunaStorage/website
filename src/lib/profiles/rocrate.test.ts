@@ -145,3 +145,36 @@ describe('an externally authored profile crate', () => {
     expect(missingShapesArtifacts(resolved)).toEqual(['constraints/chemical-substance.shacl.ttl'])
   })
 })
+
+describe('a public profile crate', () => {
+  it('keeps the shapes text next to the external copy', () => {
+    const basics = {
+      slug: 'public', name: 'Public profile', description: 'External artifacts', version: '1.0',
+      datePublished: '2026-09-13', license: 'https://creativecommons.org/licenses/by/4.0/',
+      entityRules: liftShapes(fixture('class-chain.ttl')).entities,
+    }
+    const external = (name: string) => ({
+      id: `https://w3id.org/aruna/data/${name}`,
+      contentUrl: `https://s3.example.test/profiles-group/profiles/public/${name}`,
+      contentSize: 1,
+      sha256: 'a'.repeat(64),
+    })
+    const embedded = buildProfileCrate(basics)
+    const published = buildProfileCrate({
+      ...basics,
+      externalArtifacts: {
+        html: external('profile.html'), schema: external('schema.json'),
+        mode: external('mode.json'), shapes: external('shapes.ttl'),
+      },
+    })
+    const entities = published['@graph'] as Record<string, unknown>[]
+    const shapes = entities.find((entity) => entity['@id'] === external('shapes.ttl').id)
+    const mode = entities.find((entity) => entity['@id'] === external('mode.json').id)
+
+    expect(shapes).toMatchObject({ contentUrl: external('shapes.ttl').contentUrl })
+    expect(typeof shapes?.text).toBe('string')
+    expect(mode?.text).toBeUndefined()
+    expect(extractShapesTexts(published)).toEqual(extractShapesTexts(embedded))
+    expect(missingShapesArtifacts(published)).toEqual([])
+  })
+})
