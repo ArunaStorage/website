@@ -54,6 +54,7 @@ async function render(options: { live?: boolean; running?: boolean; starting?: b
   const activeCellId = ref('first')
   const noteCellInputs = vi.fn()
   const addSessionInputs = vi.fn()
+  const getJob = vi.fn()
   const readScratch = vi.fn()
   const s3 = {
     listObjects: vi.fn().mockResolvedValue({ objects: [] }),
@@ -92,6 +93,8 @@ async function render(options: { live?: boolean; running?: boolean; starting?: b
     '@/composables/useS3': { useS3: () => s3 },
     '@/composables/useSessionFiles': sessionFiles,
     '@/lib/notebook/session': { addSessionInputs, readScratch, SCRATCH_READ_LIMIT_BYTES: LIMIT },
+    '@/lib/jobs': { getJob },
+    '@/components/ui/Progress.vue': moduleDefault(defineComponent({ props: ['value', 'max'], setup: (props) => () => h('div', { role: 'progressbar', 'aria-valuenow': props.value, 'aria-valuemax': props.max }) })),
     '@/lib/notebook/document': { NOTEBOOK_DATA_PREFIX: 'data/' },
     '@/lib/tes': { parseS3Url: () => ({ bucket: 'source', key: 'input.txt' }) },
     '@/lib/utils': { errorMessage: (cause: Error) => cause.message, formatBytes: (bytes: number) => `${bytes} B` },
@@ -112,7 +115,7 @@ async function render(options: { live?: boolean; running?: boolean; starting?: b
   const onHide = vi.fn()
   const { root, app } = await mountApp(defineComponent({ setup: () => () => h(component, { onStart, onHide }) }))
   await flush()
-  return { root, app, generation, activeCellId, noteCellInputs, addSessionInputs, readScratch, s3, session, onStart, onHide }
+  return { root, app, generation, activeCellId, noteCellInputs, addSessionInputs, getJob, readScratch, s3, session, onStart, onHide }
 }
 
 function row(root: HostNode, path: string): HostNode {
@@ -183,6 +186,68 @@ describe('notebook input provenance', () => {
     if (changed) expect(noteCellInputs).not.toHaveBeenCalled()
     else expect(noteCellInputs).toHaveBeenCalledWith('first', [expect.objectContaining({ version_id: 'source-version' })])
     expect(content(root)).not.toContain('are now in')
+    app.unmount()
+  })
+
+  it('follows a queued copy until its job lands the file', async () => {
+    const { root, app, noteCellInputs, addSessionInputs, getJob } = await render()
+    vi.useFakeTimers()
+    try {
+      addSessionInputs.mockResolvedValue({ staged: [], failed: [], pending: [{ dest_key: 'data/input.txt', job_id: 'copy-1', source_node_id: 'node-1' }] })
+      getJob.mockResolvedValueOnce({ state: 'running', progress: { current: 5, total: 12, unit: 'bytes' } })
+      getJob.mockResolvedValueOnce({ state: 'succeeded', progress: { current: 12, total: 12, unit: 'bytes' }, result: { version_id: 'source-version', blake3: 'hash' } })
+      await click(await rowItem(root, 'data', 'Add files from buckets'))
+      await click(button(root, 'Pick input into workspace/data/'))
+      await flush()
+      expect(addSessionInputs).toHaveBeenCalledWith('job-a', [expect.objectContaining({ strategy: 'snapshot' })], { baseUrl: '/api/v1' })
+      expect(content(root)).toContain('Copying input.txt into data/')
+      expect(noteCellInputs).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(2000)
+      await flush()
+      expect(getJob).toHaveBeenCalledWith('copy-1', { baseUrl: '/api/v1' })
+      expect(content(root)).toContain('5 B of 12 B')
+      const bar = element(root, (node) => node.props.role === 'progressbar')
+      expect(bar.props['aria-valuenow']).toBe(5)
+      listScratch.mockClear()
+      await vi.advanceTimersByTimeAsync(2000)
+      await flush()
+      expect(content(root)).not.toContain('Copying input.txt')
+      expect(listScratch).toHaveBeenCalledWith('job-a', 'data', { baseUrl: '/api/v1' })
+      expect(noteCellInputs).toHaveBeenCalledWith('first', [expect.objectContaining({ dest_key: 'data/input.txt', source_node_id: 'node-1', version_id: 'source-version', blake3: 'hash' })])
+      app.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports a queued copy that failed', async () => {
+    const { root, app, addSessionInputs, getJob } = await render()
+    vi.useFakeTimers()
+    try {
+      addSessionInputs.mockResolvedValue({ staged: [], failed: [], pending: [{ dest_key: 'data/input.txt', job_id: 'copy-1', source_node_id: 'node-1' }] })
+      getJob.mockResolvedValueOnce({ state: 'failed', progress: { current: 0, unit: 'bytes' }, error: { kind: 'permanent', message: 'NoSuchKey' } })
+      await click(await rowItem(root, 'data', 'Add files from buckets'))
+      await click(button(root, 'Pick input into workspace/data/'))
+      await flush()
+      await vi.advanceTimersByTimeAsync(2000)
+      await flush()
+      expect(content(root)).not.toContain('Copying input.txt')
+      expect(content(root)).toContain('input.txt did not land: NoSuchKey')
+      app.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('links instead of copying when asked', async () => {
+    const { root, app, addSessionInputs } = await render()
+    addSessionInputs.mockResolvedValue({ staged: [], failed: [], pending: [] })
+    const link = await rowItem(root, 'data', 'Link files from buckets')
+    expect(link.props.title).toBe('Nothing is copied: a reference streams from its source when read')
+    await click(link)
+    await click(button(root, 'Pick input into workspace/data/'))
+    await flush()
+    expect(addSessionInputs).toHaveBeenCalledWith('job-a', [expect.objectContaining({ strategy: 'reference' })], { baseUrl: '/api/v1' })
     app.unmount()
   })
 })

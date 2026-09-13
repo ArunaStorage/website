@@ -60,6 +60,8 @@ export interface StagedInputRequest {
   source_node_id?: string
   /** Full key inside the workspace bucket; the portal writes under data/. */
   dest_key: string
+  /** For a source that is itself a reference: pull the bytes (default) or link them. */
+  strategy?: 'snapshot' | 'reference'
 }
 
 export interface StagedInput {
@@ -72,7 +74,8 @@ export interface StagedInput {
 
 export interface SessionInputsResponse {
   staged: StagedInput[]
-  pending: { dest_key: string; job_id: string }[]
+  /** Sources a background copy job pulls in; `getJob` reports its progress in bytes. */
+  pending: { dest_key: string; job_id: string; source_node_id?: string }[]
   /** Items that did not land after the first one did; empty when all landed. */
   failed: { dest_key: string; error: string }[]
 }

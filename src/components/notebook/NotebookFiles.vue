@@ -11,6 +11,7 @@ import EmptyState from '@/components/ui/EmptyState.vue'
 import IconButton from '@/components/ui/IconButton.vue'
 import Input from '@/components/ui/Input.vue'
 import Notice from '@/components/ui/Notice.vue'
+import Progress from '@/components/ui/Progress.vue'
 import Spinner from '@/components/ui/Spinner.vue'
 import TesDataRefDialog from '@/components/compute/TesDataRefDialog.vue'
 import AddDataDialog from '@/components/data/AddDataDialog.vue'
@@ -18,7 +19,8 @@ import NotebookCopyDialog from '@/components/notebook/NotebookCopyDialog.vue'
 import { injectNotebook } from '@/composables/notebookContext'
 import { useS3 } from '@/composables/useS3'
 import { joinPath, parentPath, useSessionFiles } from '@/composables/useSessionFiles'
-import { addSessionInputs, readScratch, SCRATCH_READ_LIMIT_BYTES, type ScratchEntry } from '@/lib/notebook/session'
+import { getJob } from '@/lib/jobs'
+import { addSessionInputs, readScratch, SCRATCH_READ_LIMIT_BYTES, type ScratchEntry, type StagedInputRequest } from '@/lib/notebook/session'
 import { NOTEBOOK_DATA_PREFIX } from '@/lib/notebook/document'
 import { parseS3Url, type TesDataRefEntry } from '@/lib/tes'
 import { errorMessage, formatBytes } from '@/lib/utils'
@@ -31,6 +33,7 @@ import {
   FileText,
   Folder,
   FolderPlus,
+  Link,
   PanelLeft,
   Pencil,
   Play,
@@ -44,6 +47,21 @@ const DATA_FOLDER = NOTEBOOK_DATA_PREFIX.replace(/\/$/, '')
 const OUTSIDE_DATA = `Only ${DATA_FOLDER}/ is stored in the bucket`
 const ONE_TO_RENAME = 'Select one item to rename'
 const TOO_LARGE = `Larger than ${formatBytes(SCRATCH_READ_LIMIT_BYTES)}, so the kernel cannot hand it out`
+const LINK_HINT = 'Nothing is copied: a reference streams from its source when read'
+/** How often a queued copy is asked for its progress. */
+const POLL_MS = 2000
+
+/** One background copy the node is still pulling into the bucket. */
+interface PendingCopy {
+  jobId: string
+  destKey: string
+  name: string
+  folder: string
+  cellId: string
+  sourceNodeId: string
+  current: number
+  total: number | null
+}
 /** A folder is handled object by object; the bound keeps one action from moving an archive. */
 const FOLDER_LIMIT = 500
 
@@ -75,8 +93,11 @@ const error = ref<string | null>(null)
 /** The folder a staging dialog was opened from. */
 const target = ref(DATA_FOLDER)
 const addOpen = ref(false)
+const addStrategy = ref<NonNullable<StagedInputRequest['strategy']>>('snapshot')
 const importOpen = ref(false)
 const staging = ref(false)
+const pending = ref<PendingCopy[]>([])
+let pollTimer: ReturnType<typeof setTimeout> | null = null
 const dataKeys = ref<ReadonlySet<string>>(new Set())
 
 const creating = ref<string | null>(null)
@@ -103,7 +124,10 @@ const copyBusy = ref(false)
 
 const bucket = computed(() => notebook.meta.value?.workspace_bucket ?? '')
 let disposed = false
-onScopeDispose(() => { disposed = true })
+onScopeDispose(() => {
+  disposed = true
+  stopPolling()
+})
 
 function current() {
   const generation = notebook.generation.value
@@ -113,6 +137,8 @@ function current() {
 
 watch([notebook.generation, session.jobId], () => {
   staging.value = false
+  stopPolling()
+  pending.value = []
   copyBusy.value = false
   busy.value = false
   note.value = null
@@ -436,8 +462,9 @@ async function loadDataKeys() {
   }
 }
 
-function openAdd(folder: string) {
+function openAdd(folder: string, strategy: NonNullable<StagedInputRequest['strategy']> = 'snapshot') {
   target.value = folder
+  addStrategy.value = strategy
   addOpen.value = true
 }
 
@@ -623,18 +650,20 @@ async function stage(entry: TesDataRefEntry) {
   const active = current()
   const cellId = notebook.activeCellId.value
   const folder = target.value
-  const items =
+  const strategy = addStrategy.value
+  const items: StagedInputRequest[] =
     entry.kind === 'file'
       ? (() => {
           const parsed = parseS3Url(entry.url)
           return parsed
-            ? [{ bucket: parsed.bucket, key: parsed.key, dest_key: joinPath(folder, entry.name) }]
+            ? [{ bucket: parsed.bucket, key: parsed.key, dest_key: joinPath(folder, entry.name), strategy }]
             : []
         })()
       : entry.files.map((file) => ({
           bucket: entry.bucket,
           key: file.key,
           dest_key: joinPath(folder, `${entry.name}/${file.name}`),
+          strategy,
         }))
   if (!items.length) return
   staging.value = true
@@ -643,6 +672,19 @@ async function stage(entry: TesDataRefEntry) {
     const result = await addSessionInputs(session.jobId.value, items, session.client.value)
     if (!active()) return
     const failed = result.failed ?? []
+    for (const queued of result.pending ?? []) {
+      pending.value.push({
+        jobId: queued.job_id,
+        destKey: queued.dest_key,
+        name: queued.dest_key.slice(folder.length + 1),
+        folder,
+        cellId,
+        sourceNodeId: queued.source_node_id ?? '',
+        current: 0,
+        total: null,
+      })
+    }
+    if (result.pending?.length) schedulePoll()
     if (result.staged.length) files.refresh(folder)
     if (cellId && result.staged.length) {
       notebook.noteCellInputs(
@@ -662,6 +704,52 @@ async function stage(entry: TesDataRefEntry) {
   } finally {
     if (active()) staging.value = false
   }
+}
+
+function stopPolling() {
+  if (pollTimer !== null) clearTimeout(pollTimer)
+  pollTimer = null
+}
+
+function schedulePoll() {
+  if (pollTimer !== null || !pending.value.length) return
+  pollTimer = setTimeout(() => {
+    pollTimer = null
+    void pollPending()
+  }, POLL_MS)
+}
+
+/** Asks each queued copy for its progress; a finished one lands in the tree. */
+async function pollPending() {
+  if (!session.jobId.value) return
+  const active = current()
+  const client = session.client.value
+  for (const copy of [...pending.value]) {
+    try {
+      const job = await getJob(copy.jobId, client)
+      if (!active()) return
+      copy.current = job.progress.current
+      copy.total = job.progress.total ?? null
+      if (job.state === 'succeeded') {
+        pending.value = pending.value.filter((other) => other !== copy)
+        files.refresh(copy.folder)
+        const result = (job.result ?? {}) as { version_id?: string; blake3?: string }
+        if (copy.cellId) {
+          notebook.noteCellInputs(copy.cellId, [
+            { dest_key: copy.destKey, source_node_id: copy.sourceNodeId, version_id: result.version_id, blake3: result.blake3 },
+          ])
+        }
+      } else if (job.state === 'failed' || job.state === 'cancelled' || job.state === 'indeterminate') {
+        pending.value = pending.value.filter((other) => other !== copy)
+        error.value = `${copy.name} did not land: ${job.error?.message ?? job.state}`
+      }
+    } catch (cause) {
+      if (!active()) return
+      pending.value = pending.value.filter((other) => other !== copy)
+      error.value = errorMessage(cause)
+    }
+  }
+  if (active()) schedulePoll()
 }
 
 function copyReasonAll(list: TreeRow[]): string | null {
@@ -762,6 +850,14 @@ async function copyTo(destination: { bucket: string; prefix: string }) {
       </nav>
       <Notice v-if="note" tone="info">{{ note }}</Notice>
       <Notice v-if="error" tone="error">{{ error }}</Notice>
+      <div v-for="copy in pending" :key="copy.jobId" class="space-y-1 rounded border border-border/60 px-2 py-1.5 text-xs">
+        <p class="flex items-center gap-2">
+          <Spinner />
+          <span class="min-w-0 flex-1 truncate" :title="copy.destKey">Copying {{ copy.name }} into {{ copy.folder }}/</span>
+          <span class="shrink-0 text-muted-foreground">{{ copy.total ? `${formatBytes(copy.current)} of ${formatBytes(copy.total)}` : formatBytes(copy.current) }}</span>
+        </p>
+        <Progress :value="copy.current" :max="copy.total ?? 1" :indeterminate="copy.total === null" :label="`Copying ${copy.name}`" :warn="101" :critical="101" />
+      </div>
 
       <div v-if="!session.running.value" class="space-y-2">
         <EmptyState compact title="Not running." description="Start a kernel to see the files inside it." />
@@ -877,6 +973,9 @@ async function copyTo(destination: { bucket: string; prefix: string }) {
           </DropdownMenuItem>
           <DropdownMenuItem class="text-xs" :disabled="Boolean(stageReason(menuRow.path)) || staging" :title="stageReason(menuRow.path) ?? undefined" @select="openAdd(menuRow.path)">
             <Plus class="size-3.5 text-muted-foreground" /> Add files from buckets
+          </DropdownMenuItem>
+          <DropdownMenuItem class="text-xs" :disabled="Boolean(stageReason(menuRow.path)) || staging" :title="stageReason(menuRow.path) ?? LINK_HINT" @select="openAdd(menuRow.path, 'reference')">
+            <Link class="size-3.5 text-muted-foreground" /> Link files from buckets
           </DropdownMenuItem>
           <DropdownMenuItem class="text-xs" :disabled="!inData(menuRow.path)" :title="inData(menuRow.path) ? undefined : OUTSIDE_DATA" @select="openImport(menuRow.path)">
             <CloudDownload class="size-3.5 text-muted-foreground" /> Import from connector
