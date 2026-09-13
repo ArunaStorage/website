@@ -18,6 +18,7 @@ import AddDataDialog from '@/components/data/AddDataDialog.vue'
 import NotebookCopyDialog from '@/components/notebook/NotebookCopyDialog.vue'
 import { injectNotebook } from '@/composables/notebookContext'
 import { useS3 } from '@/composables/useS3'
+import { useStagingReferences } from '@/composables/useStagingReferences'
 import { joinPath, parentPath, useSessionFiles } from '@/composables/useSessionFiles'
 import { getJob } from '@/lib/jobs'
 import { addSessionInputs, readScratch, SCRATCH_READ_LIMIT_BYTES, type ScratchEntry, type StagedInputRequest } from '@/lib/notebook/session'
@@ -47,7 +48,6 @@ const DATA_FOLDER = NOTEBOOK_DATA_PREFIX.replace(/\/$/, '')
 const OUTSIDE_DATA = `Only ${DATA_FOLDER}/ is stored in the bucket`
 const ONE_TO_RENAME = 'Select one item to rename'
 const TOO_LARGE = `Larger than ${formatBytes(SCRATCH_READ_LIMIT_BYTES)}, so the kernel cannot hand it out`
-const LINK_HINT = 'Nothing is copied: a reference streams from its source when read'
 /** How often a queued copy is asked for its progress. */
 const POLL_MS = 2000
 
@@ -93,7 +93,8 @@ const error = ref<string | null>(null)
 /** The folder a staging dialog was opened from. */
 const target = ref(DATA_FOLDER)
 const addOpen = ref(false)
-const addStrategy = ref<NonNullable<StagedInputRequest['strategy']>>('snapshot')
+/** Copies the picks instead of linking them; the dialog's toggle. */
+const copyMode = ref(false)
 const importOpen = ref(false)
 const staging = ref(false)
 const pending = ref<PendingCopy[]>([])
@@ -123,6 +124,9 @@ const copySources = ref<CopySource[]>([])
 const copyBusy = ref(false)
 
 const bucket = computed(() => notebook.meta.value?.workspace_bucket ?? '')
+const references = useStagingReferences(bucket, computed(() => session.running.value))
+/** Keys linked in this session, marked before the reference listing caught up. */
+const justLinked = ref<ReadonlySet<string>>(new Set())
 let disposed = false
 onScopeDispose(() => {
   disposed = true
@@ -139,6 +143,8 @@ watch([notebook.generation, session.jobId], () => {
   staging.value = false
   stopPolling()
   pending.value = []
+  copyMode.value = false
+  justLinked.value = new Set()
   copyBusy.value = false
   busy.value = false
   note.value = null
@@ -160,7 +166,17 @@ watch([notebook.generation, session.jobId], () => {
   copyOpen.value = false
 }, { flush: 'sync' })
 
-defineExpose({ refresh: () => files.refresh() })
+defineExpose({ refresh: () => refreshTree() })
+
+/** Reads the shown folders again, and which keys are only linked. */
+function refreshTree(folder?: string) {
+  files.refresh(folder)
+  void references.reload()
+}
+
+function linkedRow(row: TreeRow): boolean {
+  return row.kind === 'file' && (justLinked.value.has(row.path) || references.keyIsReferenced(row.path))
+}
 
 function inData(path: string): boolean {
   return path === DATA_FOLDER || path.startsWith(`${DATA_FOLDER}/`)
@@ -205,6 +221,8 @@ const crumbFolder = computed(() => {
   if (!row) return ''
   return row.kind === 'dir' ? row.path : parentPath(row.path) ?? ''
 })
+/** Where the header's add button puts files: the shown folder when it is data. */
+const addFolder = computed(() => (inData(crumbFolder.value) ? crumbFolder.value : DATA_FOLDER))
 const crumbs = computed(() => {
   const names = crumbFolder.value ? crumbFolder.value.split('/') : []
   return [{ path: '', name: 'work' }, ...names.map((name, index) => ({ path: names.slice(0, index + 1).join('/'), name }))]
@@ -462,9 +480,8 @@ async function loadDataKeys() {
   }
 }
 
-function openAdd(folder: string, strategy: NonNullable<StagedInputRequest['strategy']> = 'snapshot') {
+function openAdd(folder: string) {
   target.value = folder
-  addStrategy.value = strategy
   addOpen.value = true
 }
 
@@ -475,7 +492,7 @@ function openImport(folder: string) {
 }
 
 function onImported() {
-  files.refresh(target.value)
+  refreshTree(target.value)
 }
 
 function startFolder(folder: string) {
@@ -494,7 +511,7 @@ async function commitFolder() {
   try {
     await s3.createFolder(bucket.value, `${folder}/`, name)
     if (!active()) return
-    files.refresh(folder)
+    refreshTree(folder)
   } catch (cause) {
     if (active()) error.value = errorMessage(cause)
   }
@@ -536,7 +553,10 @@ async function relocate(source: TreeRow, dest: string, done: string): Promise<bo
   const active = current()
   busy.value = true
   error.value = null
-  note.value = null
+  note.value =
+    parentPath(dest) === parentPath(source.path)
+      ? `Renaming ${source.name}…`
+      : `Moving ${source.name} to ${parentPath(dest) ?? ''}/…`
   try {
     const keys = source.kind === 'dir' ? await folderKeys(source, 'Move') : [source.path]
     if (!keys) return false
@@ -555,7 +575,7 @@ async function relocate(source: TreeRow, dest: string, done: string): Promise<bo
     if (isSelected(source.path)) selection.value = new Set([...selection.value].map((path) => (path === source.path ? dest : path)))
     if (focused.value === source.path) focused.value = dest
     note.value = done
-    files.refresh(parentPath(dest) ?? '')
+    refreshTree(parentPath(dest) ?? '')
     return true
   } catch (cause) {
     if (active()) error.value = errorMessage(cause)
@@ -593,7 +613,7 @@ async function remove(list: TreeRow[]) {
     if (active()) {
       busy.value = false
       selection.value = new Set([...selection.value].filter((path) => !gone.includes(path)))
-      for (const folder of new Set(gone.map((path) => parentPath(path) ?? ''))) files.refresh(folder)
+      for (const folder of new Set(gone.map((path) => parentPath(path) ?? ''))) refreshTree(folder)
     }
   }
 }
@@ -620,7 +640,7 @@ async function upload(folder: string, list: File[]) {
   } finally {
     if (active()) {
       busy.value = false
-      if (done) files.refresh(folder)
+      if (done) refreshTree(folder)
     }
   }
 }
@@ -650,7 +670,7 @@ async function stage(entry: TesDataRefEntry) {
   const active = current()
   const cellId = notebook.activeCellId.value
   const folder = target.value
-  const strategy = addStrategy.value
+  const strategy = copyMode.value ? 'snapshot' : 'reference'
   const items: StagedInputRequest[] =
     entry.kind === 'file'
       ? (() => {
@@ -672,6 +692,8 @@ async function stage(entry: TesDataRefEntry) {
     const result = await addSessionInputs(session.jobId.value, items, session.client.value)
     if (!active()) return
     const failed = result.failed ?? []
+    const linked = result.staged.filter((file) => file.linked).map((file) => file.dest_key)
+    if (linked.length) justLinked.value = new Set([...justLinked.value, ...linked])
     for (const queued of result.pending ?? []) {
       pending.value.push({
         jobId: queued.job_id,
@@ -685,7 +707,7 @@ async function stage(entry: TesDataRefEntry) {
       })
     }
     if (result.pending?.length) schedulePoll()
-    if (result.staged.length) files.refresh(folder)
+    if (result.staged.length) refreshTree(folder)
     if (cellId && result.staged.length) {
       notebook.noteCellInputs(
         cellId,
@@ -732,7 +754,7 @@ async function pollPending() {
       copy.total = job.progress.total ?? null
       if (job.state === 'succeeded') {
         pending.value = pending.value.filter((other) => other !== copy)
-        files.refresh(copy.folder)
+        refreshTree(copy.folder)
         const result = (job.result ?? {}) as { version_id?: string; blake3?: string }
         if (copy.cellId) {
           notebook.noteCellInputs(copy.cellId, [
@@ -831,7 +853,8 @@ async function copyTo(destination: { bucket: string; prefix: string }) {
     <!-- The header is as tall as a toolbar button, so it lines up with Run notebook at xl. -->
     <header class="sticky top-0 z-[1] flex h-8 items-center gap-0.5 border-b border-border/60 bg-card pl-3 pr-1">
       <h2 class="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">Files</h2>
-      <IconButton v-if="session.running.value" label="Refresh kernel files" size="icon-sm" class="shrink-0" @click="files.refresh()"><RefreshCw class="size-3.5" /></IconButton>
+      <IconButton v-if="session.running.value" label="Add files" size="icon-sm" class="shrink-0" :disabled="Boolean(stageReason(addFolder)) || staging" :title="stageReason(addFolder) ?? `Add files from buckets into ${addFolder}/`" @click="openAdd(addFolder)"><Plus class="size-3.5" /></IconButton>
+      <IconButton v-if="session.running.value" label="Refresh kernel files" size="icon-sm" class="shrink-0" @click="refreshTree()"><RefreshCw class="size-3.5" /></IconButton>
       <IconButton label="Hide files" aria-expanded="true" size="icon-sm" class="shrink-0" @click="emit('hide')"><PanelLeft class="size-3.5" /></IconButton>
     </header>
     <div class="space-y-3 px-3 py-3">
@@ -848,7 +871,8 @@ async function copyTo(destination: { bucket: string; prefix: string }) {
           >{{ crumb.name }}</button>
         </template>
       </nav>
-      <Notice v-if="note" tone="info">{{ note }}</Notice>
+      <p v-if="note && busy" class="flex items-center gap-2 text-xs text-muted-foreground"><Spinner /> {{ note }}</p>
+      <Notice v-else-if="note && !error" tone="info">{{ note }}</Notice>
       <Notice v-if="error" tone="error">{{ error }}</Notice>
       <div v-for="copy in pending" :key="copy.jobId" class="space-y-1 rounded border border-border/60 px-2 py-1.5 text-xs">
         <p class="flex items-center gap-2">
@@ -922,7 +946,10 @@ async function copyTo(destination: { bucket: string; prefix: string }) {
               @keydown.esc.prevent="renaming = null"
               @blur="commitRename"
             />
-            <span v-else class="truncate font-mono text-foreground" :title="row.name">{{ row.kind === 'dir' ? `${row.name}/` : row.name }}</span>
+            <span v-else class="flex min-w-0 items-center gap-1 font-mono text-foreground" :title="row.name">
+              <span class="truncate">{{ row.kind === 'dir' ? `${row.name}/` : row.name }}</span>
+              <span v-if="linkedRow(row)" class="shrink-0 text-muted-foreground" aria-label="Linked" title="Linked only: reads stream from the source, no bytes are stored here"><Link class="size-3" /></span>
+            </span>
             <span class="text-right text-[10px] tabular-nums text-muted-foreground">
               <Spinner v-if="row.kind === 'dir' && files.directory(row.path)?.loading" />
               <template v-else-if="row.kind === 'file'">{{ formatBytes(row.bytes) }}</template>
@@ -974,9 +1001,6 @@ async function copyTo(destination: { bucket: string; prefix: string }) {
           <DropdownMenuItem class="text-xs" :disabled="Boolean(stageReason(menuRow.path)) || staging" :title="stageReason(menuRow.path) ?? undefined" @select="openAdd(menuRow.path)">
             <Plus class="size-3.5 text-muted-foreground" /> Add files from buckets
           </DropdownMenuItem>
-          <DropdownMenuItem class="text-xs" :disabled="Boolean(stageReason(menuRow.path)) || staging" :title="stageReason(menuRow.path) ?? LINK_HINT" @select="openAdd(menuRow.path, 'reference')">
-            <Link class="size-3.5 text-muted-foreground" /> Link files from buckets
-          </DropdownMenuItem>
           <DropdownMenuItem class="text-xs" :disabled="!inData(menuRow.path)" :title="inData(menuRow.path) ? undefined : OUTSIDE_DATA" @select="openImport(menuRow.path)">
             <CloudDownload class="size-3.5 text-muted-foreground" /> Import from connector
           </DropdownMenuItem>
@@ -996,7 +1020,7 @@ async function copyTo(destination: { bucket: string; prefix: string }) {
       </DropdownMenuContent>
     </DropdownMenu>
 
-    <TesDataRefDialog v-model:open="addOpen" mode="input" :destination="`${bucket}/${target}/`" @add="stage" />
+    <TesDataRefDialog v-model:open="addOpen" v-model:copy="copyMode" mode="input" :destination="`${bucket}/${target}/`" @add="stage" />
 
     <!-- The data manager's own import, pointed at the picked data/ folder. -->
     <AddDataDialog

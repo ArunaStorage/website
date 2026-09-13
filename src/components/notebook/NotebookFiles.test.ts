@@ -56,6 +56,8 @@ async function render(options: { live?: boolean; running?: boolean; starting?: b
   const addSessionInputs = vi.fn()
   const getJob = vi.fn()
   const readScratch = vi.fn()
+  const linkedKeys = new Set<string>()
+  const referencesReload = vi.fn()
   const s3 = {
     listObjects: vi.fn().mockResolvedValue({ objects: [] }),
     listObjectsRecursive: vi.fn(),
@@ -71,9 +73,10 @@ async function render(options: { live?: boolean; running?: boolean; starting?: b
     return { path, entries: TREE[path] ?? [] }
   })
   const textStub = defineComponent({ props: ['title', 'description'], setup: (props) => () => h('p', `${props.title} ${props.description ?? ''}`) })
-  const picker = defineComponent({ props: ['destination'], setup: (props, { emit }) => () => h('button', {
-    onClick: () => emit('add', { kind: 'file', url: 's3://source/input.txt', name: 'input.txt' }),
-  }, `Pick input into ${props.destination}`) })
+  const picker = defineComponent({ props: ['destination', 'copy'], emits: ['add', 'update:copy'], setup: (props, { emit }) => () => h('div', [
+    h('button', { onClick: () => emit('add', { kind: 'file', url: 's3://source/input.txt', name: 'input.txt' }) }, `Pick input into ${props.destination}`),
+    h('button', { onClick: () => emit('update:copy', true) }, `Copy instead (${props.copy ? 'on' : 'off'})`),
+  ]) })
   const importer = defineComponent({ props: ['open', 'prefix'], setup: (props) => () => props.open ? h('p', `Import into ${props.prefix}`) : null })
   const copyDialog = defineComponent({ props: ['open', 'source', 'count'], emits: ['copy'], setup: (props, { emit }) => () => props.open
     ? h('button', { onClick: () => emit('copy', { bucket: 'dest', prefix: 'out/' }) }, `Copy ${props.count} of ${props.source} to dest`)
@@ -92,6 +95,7 @@ async function render(options: { live?: boolean; running?: boolean; starting?: b
     }) },
     '@/composables/useS3': { useS3: () => s3 },
     '@/composables/useSessionFiles': sessionFiles,
+    '@/composables/useStagingReferences': { useStagingReferences: () => ({ keyIsReferenced: (key: string) => linkedKeys.has(key), reload: referencesReload }) },
     '@/lib/notebook/session': { addSessionInputs, readScratch, SCRATCH_READ_LIMIT_BYTES: LIMIT },
     '@/lib/jobs': { getJob },
     '@/components/ui/Progress.vue': moduleDefault(defineComponent({ props: ['value', 'max'], setup: (props) => () => h('div', { role: 'progressbar', 'aria-valuenow': props.value, 'aria-valuemax': props.max }) })),
@@ -115,7 +119,7 @@ async function render(options: { live?: boolean; running?: boolean; starting?: b
   const onHide = vi.fn()
   const { root, app } = await mountApp(defineComponent({ setup: () => () => h(component, { onStart, onHide }) }))
   await flush()
-  return { root, app, generation, activeCellId, noteCellInputs, addSessionInputs, getJob, readScratch, s3, session, onStart, onHide }
+  return { root, app, generation, activeCellId, noteCellInputs, addSessionInputs, getJob, readScratch, s3, session, onStart, onHide, linkedKeys, referencesReload }
 }
 
 function row(root: HostNode, path: string): HostNode {
@@ -197,6 +201,7 @@ describe('notebook input provenance', () => {
       getJob.mockResolvedValueOnce({ state: 'running', progress: { current: 5, total: 12, unit: 'bytes' } })
       getJob.mockResolvedValueOnce({ state: 'succeeded', progress: { current: 12, total: 12, unit: 'bytes' }, result: { version_id: 'source-version', blake3: 'hash' } })
       await click(await rowItem(root, 'data', 'Add files from buckets'))
+      await click(button(root, 'Copy instead (off)'))
       await click(button(root, 'Pick input into workspace/data/'))
       await flush()
       expect(addSessionInputs).toHaveBeenCalledWith('job-a', [expect.objectContaining({ strategy: 'snapshot' })], { baseUrl: '/api/v1' })
@@ -227,6 +232,7 @@ describe('notebook input provenance', () => {
       addSessionInputs.mockResolvedValue({ staged: [], failed: [], pending: [{ dest_key: 'data/input.txt', job_id: 'copy-1', source_node_id: 'node-1' }] })
       getJob.mockResolvedValueOnce({ state: 'failed', progress: { current: 0, unit: 'bytes' }, error: { kind: 'permanent', message: 'NoSuchKey' } })
       await click(await rowItem(root, 'data', 'Add files from buckets'))
+      await click(button(root, 'Copy instead (off)'))
       await click(button(root, 'Pick input into workspace/data/'))
       await flush()
       await vi.advanceTimersByTimeAsync(2000)
@@ -239,15 +245,28 @@ describe('notebook input provenance', () => {
     }
   })
 
-  it('links instead of copying when asked', async () => {
-    const { root, app, addSessionInputs } = await render()
-    addSessionInputs.mockResolvedValue({ staged: [], failed: [], pending: [] })
-    const link = await rowItem(root, 'data', 'Link files from buckets')
-    expect(link.props.title).toBe('Nothing is copied: a reference streams from its source when read')
-    await click(link)
+  it('links by default and marks linked files', async () => {
+    const { root, app, addSessionInputs, referencesReload, linkedKeys } = await render()
+    linkedKeys.add('data/sub/a.csv')
+    addSessionInputs.mockResolvedValue({ staged: [{ dest_key: 'data/input.txt', bytes: 15, blake3: '', linked: true }], failed: [], pending: [] })
+    await click(await rowItem(root, 'data', 'Add files from buckets'))
     await click(button(root, 'Pick input into workspace/data/'))
     await flush()
     expect(addSessionInputs).toHaveBeenCalledWith('job-a', [expect.objectContaining({ strategy: 'reference' })], { baseUrl: '/api/v1' })
+    expect(referencesReload).toHaveBeenCalled()
+    await expand(root, 'sub')
+    const badge = element(root, (node) => node.props['aria-label'] === 'Linked')
+    expect(content(badge.parent as HostNode)).toContain('a.csv')
+    expect(() => element(root, (node) => node.props['aria-label'] === 'Linked' && content(node.parent as HostNode).includes('z.csv'))).toThrow()
+    app.unmount()
+  })
+
+  it('adds files from the header into the data folder', async () => {
+    const { root, app } = await render()
+    const add = element(root, (node) => node.props.label === 'Add files')
+    expect(add.props.disabled).toBeFalsy()
+    await click(add)
+    expect(button(root, 'Pick input into workspace/data/')).toBeTruthy()
     app.unmount()
   })
 })
@@ -422,6 +441,26 @@ describe('kernel file tree', () => {
     s3.listObjectsRecursive.mockResolvedValue({ objects: [], truncated: true })
     await click(await rowItem(root, 'sub', 'Copy to bucket'))
     expect(content(root)).toContain('sub/ holds more than 500 files.')
+    app.unmount()
+  })
+
+  it('shows a move while it runs', async () => {
+    const { root, app, s3 } = await render()
+    await expand(root, 'data')
+    await expand(root, 'sub')
+    let finish = () => {}
+    s3.copyObject.mockReturnValueOnce(new Promise<void>((resolve) => { finish = resolve }))
+    const event = dragEvent()
+    await (row(root, 'data/sub/a.csv').props.onDragstart as Handler)(event)
+    await (row(root, 'data/other').props.onDragover as Handler)(event)
+    const dropped = (row(root, 'data/other').props.onDrop as Handler)(event)
+    await flush()
+    expect(content(root)).toContain('Moving a.csv to data/other/…')
+    finish()
+    await dropped
+    await flush()
+    expect(content(root)).not.toContain('Moving a.csv')
+    expect(content(root)).toContain('Moved a.csv to data/other/.')
     app.unmount()
   })
 

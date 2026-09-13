@@ -7,6 +7,7 @@ import DialogClose from '@/components/ui/DialogClose.vue'
 import DialogContent from '@/components/ui/DialogContent.vue'
 import DialogDescription from '@/components/ui/DialogDescription.vue'
 import DialogFooter from '@/components/ui/DialogFooter.vue'
+import Switch from '@/components/ui/Switch.vue'
 import DialogHeader from '@/components/ui/DialogHeader.vue'
 import DialogTitle from '@/components/ui/DialogTitle.vue'
 import Button from '@/components/ui/Button.vue'
@@ -32,11 +33,14 @@ const props = withDefaults(
     mountDefault?: string
     /** Where the caller puts the picks itself; hides the mount directory. */
     destination?: string
+    /** Shown as a toggle when set: copy the picks instead of linking them. */
+    copy?: boolean
   }>(),
-  { mountDefault: '/inputs/', destination: undefined },
+  { mountDefault: '/inputs/', destination: undefined, copy: undefined },
 )
 const emit = defineEmits<{
   (e: 'update:open', value: boolean): void
+  (e: 'update:copy', value: boolean): void
   (e: 'add', entry: TesDataRefEntry): void
 }>()
 
@@ -215,6 +219,10 @@ watch(
       </p>
 
       <DialogFooter>
+        <label v-if="props.copy !== undefined" class="flex flex-1 items-center gap-2 text-xs text-muted-foreground">
+          <Switch :checked="props.copy" aria-label="Copy into the workspace" @update:checked="(value: boolean) => emit('update:copy', value)" />
+          <span>{{ props.copy ? 'Copies the bytes into the workspace' : 'Links only: reads stream from the source' }}</span>
+        </label>
         <DialogClose as-child><Button variant="outline">Close</Button></DialogClose>
       </DialogFooter>
 

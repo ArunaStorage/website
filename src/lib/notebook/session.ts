@@ -70,6 +70,8 @@ export interface StagedInput {
   blake3: string
   source_node_id?: string
   version_id?: string
+  /** The workspace holds a reference; reads stream from the source. */
+  linked?: boolean
 }
 
 export interface SessionInputsResponse {
