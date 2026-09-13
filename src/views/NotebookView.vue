@@ -225,9 +225,11 @@ const savedLabel = computed(() => {
         <Notice v-if="notebook.loadError.value" tone="error">{{ notebook.loadError.value }}</Notice>
         <Notice v-if="notebook.saveError.value" tone="error">{{ notebook.saveError.value }}</Notice>
 
-        <div class="grid items-start gap-x-6 gap-y-3" :class="filesOpen ? 'xl:grid-cols-[18rem_minmax(0,1fr)]' : 'grid-cols-[minmax(0,1fr)]'">
+        <div class="grid items-start gap-x-6 gap-y-3" :class="filesOpen ? 'xl:grid-cols-[18rem_minmax(0,1fr)] xl:grid-rows-[auto_minmax(0,1fr)]' : 'grid-cols-[minmax(0,1fr)]'">
           <!-- Document order is toolbar, files panel, cells; at xl the panel takes the
-               left column and the toolbar and cells stack in the right one. -->
+               left column and the toolbar and cells stack in the right one. The row
+               template keeps the toolbar row at its own height: a panel spanning both
+               rows would otherwise grow the first one and push the cells down. -->
           <div class="sticky top-14 z-10 flex flex-wrap items-center gap-2 bg-background/95 py-2 backdrop-blur" :class="filesOpen ? 'xl:col-start-2 xl:row-start-1' : ''">
             <IconButton v-if="!filesOpen" label="Show files" aria-expanded="false" class="h-8 w-8" @click="filesOpen = true"><PanelLeft class="size-4" /></IconButton>
             <NotebookSessionBar ref="sessionBar" />

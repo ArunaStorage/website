@@ -90,6 +90,8 @@ describe('notebook workspace controls', () => {
     const grid = band.parent!
     const columns = () => grid.children.filter((node) => node.kind === 'element')
     expect(String(grid.props.class)).toContain('18rem')
+    // The toolbar row keeps its own height, so the panel never pushes the cells down.
+    expect(String(grid.props.class)).toContain('xl:grid-rows-[auto_minmax(0,1fr)]')
     const [toolbar, files, cells] = columns()
     expect(toolbar).toBe(band)
     expect(String(toolbar.props.class)).toContain('xl:col-start-2 xl:row-start-1')
@@ -101,6 +103,7 @@ describe('notebook workspace controls', () => {
     ;(files.props.onHide as () => void)()
     await flush()
     expect(String(grid.props.class)).toContain('grid-cols-[minmax(0,1fr)]')
+    expect(String(grid.props.class)).not.toContain('grid-rows')
     expect(columns()).toHaveLength(2)
     expect(() => element(root, (node) => typeof node.props.onHide === 'function')).toThrow()
     const show = element(band, (node) => node.props.label === 'Show files')
