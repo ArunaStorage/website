@@ -60,6 +60,7 @@ async function render(options: { live?: boolean; running?: boolean; starting?: b
   const referencesReload = vi.fn()
   const s3 = {
     listObjects: vi.fn().mockResolvedValue({ objects: [] }),
+    downloadUrl: vi.fn().mockResolvedValue('https://s3.example/get'),
     listObjectsRecursive: vi.fn(),
     createFolder: vi.fn().mockResolvedValue(undefined),
     copyObject: vi.fn().mockResolvedValue(undefined),
@@ -360,6 +361,53 @@ describe('kernel file tree', () => {
     expect(readScratch).toHaveBeenCalledWith('job-a', 'out.txt', { baseUrl: '/api/v1' })
     expect(link.download).toBe('out.txt')
     expect(link.click).toHaveBeenCalledOnce()
+    app.unmount()
+  })
+
+  it('downloads a data/ file of any size through the bucket', async () => {
+    const { root, app, readScratch, s3 } = await render()
+    const link = { href: '', download: '', click: vi.fn() }
+    vi.stubGlobal('document', { createElement: () => link })
+    await expand(root, 'data')
+    await expand(root, 'sub')
+    await (row(root, 'data/sub/a.csv').props.onDblclick as Handler)({})
+    await flush()
+    expect(s3.downloadUrl).toHaveBeenCalledWith('workspace', 'data/sub/a.csv', undefined, undefined, 'a.csv')
+    expect(readScratch).not.toHaveBeenCalled()
+    expect(link.href).toBe('https://s3.example/get')
+    expect(link.click).toHaveBeenCalledOnce()
+    const item = await rowItem(root, 'a.csv', 'Download')
+    expect(item.props.disabled).toBeFalsy()
+    app.unmount()
+  })
+
+  it('lets a linked file be staged as a copy', async () => {
+    const { root, app, addSessionInputs, linkedKeys } = await render()
+    linkedKeys.add('data/sub/a.csv')
+    addSessionInputs.mockResolvedValue({ staged: [], failed: [], pending: [{ dest_key: 'data/sub/a.csv', job_id: 'copy-2', source_node_id: 'node-1' }] })
+    await expand(root, 'data')
+    await expand(root, 'sub')
+    expect(() => button(root, 'Stage to notebook')).toThrow()
+    await click(await rowItem(root, 'a.csv', 'Stage to notebook'))
+    await flush()
+    expect(addSessionInputs).toHaveBeenCalledWith('job-a', [{ bucket: 'workspace', key: 'data/sub/a.csv', dest_key: 'data/sub/a.csv', strategy: 'snapshot' }], { baseUrl: '/api/v1' })
+    expect(content(root)).toContain('Copying a.csv into data/sub/')
+    app.unmount()
+  })
+
+  it('lists what happened at the bottom until dismissed', async () => {
+    const { root, app } = await render()
+    await expand(root, 'data')
+    await expand(root, 'sub')
+    const event = dragEvent()
+    await (row(root, 'data/sub/a.csv').props.onDragstart as Handler)(event)
+    await (row(root, 'data/other').props.onDragover as Handler)(event)
+    await (row(root, 'data/other').props.onDrop as Handler)(event)
+    await flush()
+    const activity = element(root, (node) => node.props['aria-label'] === 'Activity')
+    expect(content(activity)).toContain('Moved a.csv to data/other/.')
+    await click(element(activity, (node) => node.props.label === 'Dismiss'))
+    expect(content(root)).not.toContain('Moved a.csv')
     app.unmount()
   })
 

@@ -10,7 +10,6 @@ import DropdownMenuTrigger from '@/components/ui/DropdownMenuTrigger.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import IconButton from '@/components/ui/IconButton.vue'
 import Input from '@/components/ui/Input.vue'
-import Notice from '@/components/ui/Notice.vue'
 import Progress from '@/components/ui/Progress.vue'
 import Spinner from '@/components/ui/Spinner.vue'
 import TesDataRefDialog from '@/components/compute/TesDataRefDialog.vue'
@@ -41,6 +40,7 @@ import {
   Plus,
   RefreshCw,
   Trash2,
+  X,
 } from '@lucide/vue'
 
 /** The kernel folder the bucket is mounted under; only it can be written from here. */
@@ -87,8 +87,32 @@ const { notebook, session } = injectNotebook()
 const s3 = useS3()
 const files = useSessionFiles(session)
 
+/** The step in flight, shown with a spinner while the panel is busy. */
 const note = ref<string | null>(null)
-const error = ref<string | null>(null)
+
+/** What the panel did lately, listed at the bottom until dismissed. */
+interface PanelEvent {
+  id: number
+  tone: 'info' | 'error'
+  text: string
+}
+const EVENT_LIMIT = 8
+const events = ref<PanelEvent[]>([])
+let nextEvent = 0
+
+function record(tone: PanelEvent['tone'], text: string) {
+  events.value = [...events.value, { id: ++nextEvent, tone, text }].slice(-EVENT_LIMIT)
+}
+
+function dismiss(id: number) {
+  events.value = events.value.filter((event) => event.id !== id)
+}
+
+/** The last two segments of a path, so a message stays readable. */
+function shortPath(path: string): string {
+  const parts = path.split('/').filter(Boolean)
+  return parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : path
+}
 
 /** The folder a staging dialog was opened from. */
 const target = ref(DATA_FOLDER)
@@ -127,6 +151,10 @@ const bucket = computed(() => notebook.meta.value?.workspace_bucket ?? '')
 const references = useStagingReferences(bucket, computed(() => session.running.value))
 /** Keys linked in this session, marked before the reference listing caught up. */
 const justLinked = ref<ReadonlySet<string>>(new Set())
+// The progress line belongs to the running step only.
+watch(busy, (running) => {
+  if (!running) note.value = null
+})
 let disposed = false
 onScopeDispose(() => {
   disposed = true
@@ -147,8 +175,7 @@ watch([notebook.generation, session.jobId], () => {
   justLinked.value = new Set()
   copyBusy.value = false
   busy.value = false
-  note.value = null
-  error.value = null
+  events.value = []
   target.value = DATA_FOLDER
   dataKeys.value = new Set()
   creating.value = null
@@ -344,7 +371,7 @@ function askDelete(row: TreeRow) {
 /** Double click and Enter: a folder opens or closes, a small file downloads. */
 function activate(row: TreeRow) {
   if (row.kind === 'dir') files.toggle(row.path)
-  else if (row.kind === 'file' && row.bytes < SCRATCH_READ_LIMIT_BYTES) void download(row.path, row.name)
+  else if (row.kind === 'file' && (inData(row.path) || row.bytes < SCRATCH_READ_LIMIT_BYTES)) void download(row.path, row.name)
 }
 
 function onKey(row: TreeRow, event: KeyboardEvent) {
@@ -459,11 +486,11 @@ async function moveAll(list: TreeRow[], folder: string) {
   const active = current()
   let moved = 0
   for (const source of list) {
-    if (!(await relocate(source, joinPath(folder, source.name), `Moved ${source.name} to ${folder}/.`))) break
+    if (!(await relocate(source, joinPath(folder, source.name), `Moved ${source.name} to ${shortPath(folder)}/.`))) break
     moved += 1
   }
   if (!active() || list.length < 2 || !moved) return
-  note.value = moved === list.length ? `Moved ${moved} items to ${folder}/.` : `Moved ${moved} of ${list.length} items to ${folder}/.`
+  record('info', moved === list.length ? `Moved ${moved} items to ${shortPath(folder)}/.` : `Moved ${moved} of ${list.length} items to ${shortPath(folder)}/.`)
 }
 
 /** Keys under the import target, so the import warns before it overwrites one. */
@@ -507,13 +534,12 @@ async function commitFolder() {
   creating.value = null
   if (folder === null || !validName(name)) return
   const active = current()
-  error.value = null
   try {
     await s3.createFolder(bucket.value, `${folder}/`, name)
     if (!active()) return
     refreshTree(folder)
   } catch (cause) {
-    if (active()) error.value = errorMessage(cause)
+    if (active()) record('error', errorMessage(cause))
   }
 }
 
@@ -537,12 +563,12 @@ async function folderKeys(row: TreeRow, verb: string): Promise<string[] | null> 
     const listing = await s3.listObjectsRecursive(bucket.value, `${row.path}/`, FOLDER_LIMIT)
     if (!active()) return null
     if (listing.truncated) {
-      error.value = `${row.name}/ holds more than ${FOLDER_LIMIT} files. ${verb} a smaller folder.`
+      record('error', `${row.name}/ holds more than ${FOLDER_LIMIT} files. ${verb} a smaller folder.`)
       return null
     }
     return listing.objects.map((object) => object.key)
   } catch (cause) {
-    if (active()) error.value = errorMessage(cause)
+    if (active()) record('error', errorMessage(cause))
     return null
   }
 }
@@ -552,16 +578,15 @@ async function relocate(source: TreeRow, dest: string, done: string): Promise<bo
   if (!inData(source.path) || !inData(dest) || dest === source.path || busy.value) return false
   const active = current()
   busy.value = true
-  error.value = null
   note.value =
     parentPath(dest) === parentPath(source.path)
       ? `Renaming ${source.name}…`
-      : `Moving ${source.name} to ${parentPath(dest) ?? ''}/…`
+      : `Moving ${source.name} to ${shortPath(parentPath(dest) ?? '')}/…`
   try {
     const keys = source.kind === 'dir' ? await folderKeys(source, 'Move') : [source.path]
     if (!keys) return false
     if (!keys.length) {
-      error.value = `${source.name}/ holds no files.`
+      record('error', `${source.name}/ holds no files.`)
       return false
     }
     for (const key of keys) {
@@ -574,11 +599,11 @@ async function relocate(source: TreeRow, dest: string, done: string): Promise<bo
     }
     if (isSelected(source.path)) selection.value = new Set([...selection.value].map((path) => (path === source.path ? dest : path)))
     if (focused.value === source.path) focused.value = dest
-    note.value = done
+    record('info', done)
     refreshTree(parentPath(dest) ?? '')
     return true
   } catch (cause) {
-    if (active()) error.value = errorMessage(cause)
+    if (active()) record('error', errorMessage(cause))
     return false
   } finally {
     if (active()) busy.value = false
@@ -591,8 +616,6 @@ async function remove(list: TreeRow[]) {
   if (!list.length || deleteReason(list) || busy.value) return
   const active = current()
   busy.value = true
-  error.value = null
-  note.value = null
   const gone: string[] = []
   try {
     for (const row of list) {
@@ -600,7 +623,7 @@ async function remove(list: TreeRow[]) {
         if (!(await folderKeys(row, 'Delete'))) return
         const result = await s3.deletePrefix(bucket.value, `${row.path}/`)
         if (!active()) return
-        if (result.errors.length) error.value = `${countFiles(result.errors.length)} could not be deleted: ${result.errors[0].message}`
+        if (result.errors.length) record('error', `${countFiles(result.errors.length)} could not be deleted: ${result.errors[0].message}`)
       } else {
         await s3.deleteObject(bucket.value, row.path)
         if (!active()) return
@@ -608,7 +631,7 @@ async function remove(list: TreeRow[]) {
       gone.push(row.path)
     }
   } catch (cause) {
-    if (active()) error.value = errorMessage(cause)
+    if (active()) record('error', errorMessage(cause))
   } finally {
     if (active()) {
       busy.value = false
@@ -623,20 +646,19 @@ async function upload(folder: string, list: File[]) {
   if (!list.length || busy.value) return
   const active = current()
   busy.value = true
-  error.value = null
   let done = 0
   try {
     for (const file of list) {
-      note.value = `Uploading ${done + 1} of ${countFiles(list.length)} to ${folder}/…`
+      note.value = `Uploading ${done + 1} of ${countFiles(list.length)} to ${shortPath(folder)}/…`
       await s3.uploadObject(bucket.value, joinPath(folder, file.name), file).promise
       if (!active()) return
       done += 1
     }
-    note.value = `Uploaded ${countFiles(done)} to ${folder}/.`
+    record('info', `Uploaded ${countFiles(done)} to ${shortPath(folder)}/.`)
   } catch (cause) {
     if (!active()) return
-    note.value = done ? `Uploaded ${done} of ${countFiles(list.length)} to ${folder}/.` : null
-    error.value = errorMessage(cause)
+    if (done) record('info', `Uploaded ${done} of ${countFiles(list.length)} to ${shortPath(folder)}/.`)
+    record('error', errorMessage(cause))
   } finally {
     if (active()) {
       busy.value = false
@@ -649,8 +671,18 @@ async function upload(folder: string, list: File[]) {
 async function download(path: string, name: string) {
   if (!session.jobId.value) return
   const active = current()
-  error.value = null
   try {
+    if (inData(path)) {
+      // The bucket serves any size, a linked file included; the name travels
+      // in the response's Content-Disposition.
+      const url = await s3.downloadUrl(bucket.value, path, undefined, undefined, name)
+      if (!active()) return
+      const link = document.createElement('a')
+      link.href = url
+      link.download = name
+      link.click()
+      return
+    }
     const blob = await readScratch(session.jobId.value, path, session.client.value)
     if (!active()) return
     const url = URL.createObjectURL(blob)
@@ -660,7 +692,7 @@ async function download(path: string, name: string) {
     link.click()
     URL.revokeObjectURL(url)
   } catch (cause) {
-    if (active()) error.value = errorMessage(cause)
+    if (active()) record('error', errorMessage(cause))
   }
 }
 
@@ -685,9 +717,22 @@ async function stage(entry: TesDataRefEntry) {
           dest_key: joinPath(folder, `${entry.name}/${file.name}`),
           strategy,
         }))
-  if (!items.length) return
+  await submitInputs(items, folder, cellId)
+}
+
+/** Copies a linked file into the workspace, so reads stop streaming from the source. */
+async function stageCopy(row: TreeRow) {
+  await submitInputs(
+    [{ bucket: bucket.value, key: row.path, dest_key: row.path, strategy: 'snapshot' }],
+    parentPath(row.path) ?? DATA_FOLDER,
+    notebook.activeCellId.value,
+  )
+}
+
+async function submitInputs(items: StagedInputRequest[], folder: string, cellId: string) {
+  if (!items.length || !session.jobId.value) return
+  const active = current()
   staging.value = true
-  error.value = null
   try {
     const result = await addSessionInputs(session.jobId.value, items, session.client.value)
     if (!active()) return
@@ -719,10 +764,10 @@ async function stage(entry: TesDataRefEntry) {
         })),
       )
     }
-    if (failed.length) error.value = `${failed.length} of ${items.length} files failed: ${failed[0].error}`
+    if (failed.length) record('error', `${failed.length} of ${items.length} files failed: ${failed[0].error}`)
   } catch (cause) {
     if (!active()) return
-    error.value = errorMessage(cause)
+    record('error', errorMessage(cause))
   } finally {
     if (active()) staging.value = false
   }
@@ -754,6 +799,7 @@ async function pollPending() {
       copy.total = job.progress.total ?? null
       if (job.state === 'succeeded') {
         pending.value = pending.value.filter((other) => other !== copy)
+        justLinked.value = new Set([...justLinked.value].filter((key) => key !== copy.destKey))
         refreshTree(copy.folder)
         const result = (job.result ?? {}) as { version_id?: string; blake3?: string }
         if (copy.cellId) {
@@ -763,12 +809,12 @@ async function pollPending() {
         }
       } else if (job.state === 'failed' || job.state === 'cancelled' || job.state === 'indeterminate') {
         pending.value = pending.value.filter((other) => other !== copy)
-        error.value = `${copy.name} did not land: ${job.error?.message ?? job.state}`
+        record('error', `${copy.name} did not land: ${job.error?.message ?? job.state}`)
       }
     } catch (cause) {
       if (!active()) return
       pending.value = pending.value.filter((other) => other !== copy)
-      error.value = errorMessage(cause)
+      record('error', errorMessage(cause))
     }
   }
   if (active()) schedulePoll()
@@ -785,7 +831,6 @@ function copyReasonAll(list: TreeRow[]): string | null {
 /** Opens the destination picker; a folder is listed first so the count is known. */
 async function startCopy(list: TreeRow[]) {
   if (!list.length || list.some((row) => row.kind === 'note') || copyReasonAll(list)) return
-  error.value = null
   const sources: CopySource[] = []
   for (const row of list) {
     let keys = inData(row.path) ? [row.path] : []
@@ -793,7 +838,7 @@ async function startCopy(list: TreeRow[]) {
       const listed = await folderKeys(row, 'Copy')
       if (!listed) return
       if (!listed.length) {
-        error.value = `${row.name}/ holds no files.`
+        record('error', `${row.name}/ holds no files.`)
         return
       }
       keys = listed
@@ -828,8 +873,6 @@ async function copyTo(destination: { bucket: string; prefix: string }) {
   if (!source || copyBusy.value) return
   const active = current()
   copyBusy.value = true
-  error.value = null
-  note.value = null
   const where = `${destination.bucket}/${destination.prefix}`
   try {
     for (const each of sources) {
@@ -837,11 +880,11 @@ async function copyTo(destination: { bucket: string; prefix: string }) {
       if (!active()) return
     }
     copyOpen.value = false
-    if (sources.length > 1) note.value = `Copied ${sources.length} items to ${where}.`
-    else if (source.kind === 'dir') note.value = `Copied ${source.keys.length} files from ${source.name}/ to ${where}${source.name}/.`
-    else note.value = `Copied ${source.name} to ${where}.`
+    if (sources.length > 1) record('info', `Copied ${sources.length} items to ${where}.`)
+    else if (source.kind === 'dir') record('info', `Copied ${source.keys.length} files from ${source.name}/ to ${where}${source.name}/.`)
+    else record('info', `Copied ${source.name} to ${where}.`)
   } catch (cause) {
-    if (active()) error.value = errorMessage(cause)
+    if (active()) record('error', errorMessage(cause))
   } finally {
     if (active()) copyBusy.value = false
   }
@@ -871,17 +914,6 @@ async function copyTo(destination: { bucket: string; prefix: string }) {
           >{{ crumb.name }}</button>
         </template>
       </nav>
-      <p v-if="note && busy" class="flex items-center gap-2 text-xs text-muted-foreground"><Spinner /> {{ note }}</p>
-      <Notice v-else-if="note && !error" tone="info">{{ note }}</Notice>
-      <Notice v-if="error" tone="error">{{ error }}</Notice>
-      <div v-for="copy in pending" :key="copy.jobId" class="space-y-1 rounded border border-border/60 px-2 py-1.5 text-xs">
-        <p class="flex items-center gap-2">
-          <Spinner />
-          <span class="min-w-0 flex-1 truncate" :title="copy.destKey">Copying {{ copy.name }} into {{ copy.folder }}/</span>
-          <span class="shrink-0 text-muted-foreground">{{ copy.total ? `${formatBytes(copy.current)} of ${formatBytes(copy.total)}` : formatBytes(copy.current) }}</span>
-        </p>
-        <Progress :value="copy.current" :max="copy.total ?? 1" :indeterminate="copy.total === null" :label="`Copying ${copy.name}`" :warn="101" :critical="101" />
-      </div>
 
       <div v-if="!session.running.value" class="space-y-2">
         <EmptyState compact title="Not running." description="Start a kernel to see the files inside it." />
@@ -986,6 +1018,22 @@ async function copyTo(destination: { bucket: string; prefix: string }) {
         </template>
         <p v-if="!rows.length" class="py-2 text-muted-foreground">The kernel folder is empty.</p>
       </div>
+
+      <section v-if="pending.length || (note && busy) || events.length" aria-label="Activity" class="space-y-1.5 border-t border-border/60 pt-2 text-xs">
+        <div v-for="copy in pending" :key="copy.jobId" class="space-y-1 rounded border border-border/60 px-2 py-1.5">
+          <p class="flex items-center gap-2">
+            <Spinner />
+            <span class="min-w-0 flex-1 truncate" :title="copy.destKey">Copying {{ copy.name }} into {{ shortPath(copy.folder) }}/</span>
+            <span class="shrink-0 text-muted-foreground">{{ copy.total ? `${formatBytes(copy.current)} of ${formatBytes(copy.total)}` : formatBytes(copy.current) }}</span>
+          </p>
+          <Progress :value="copy.current" :max="copy.total ?? 1" :indeterminate="copy.total === null" :label="`Copying ${copy.name}`" :warn="101" :critical="101" />
+        </div>
+        <p v-if="note && busy" class="flex items-center gap-2 text-muted-foreground"><Spinner /> <span class="min-w-0 flex-1 truncate" :title="note">{{ note }}</span></p>
+        <div v-for="event in events" :key="event.id" class="flex items-start gap-1" :class="event.tone === 'error' ? 'text-destructive' : 'text-muted-foreground'">
+          <span class="min-w-0 flex-1 break-words" :title="event.text">{{ event.text }}</span>
+          <IconButton label="Dismiss" size="icon-sm" class="h-5 w-5 shrink-0" @click="dismiss(event.id)"><X class="size-3" /></IconButton>
+        </div>
+      </section>
     </div>
 
     <!-- One menu for every row, anchored where the pointer or the three dots were. -->
@@ -1005,9 +1053,14 @@ async function copyTo(destination: { bucket: string; prefix: string }) {
             <CloudDownload class="size-3.5 text-muted-foreground" /> Import from connector
           </DropdownMenuItem>
         </template>
-        <DropdownMenuItem v-else class="text-xs" :disabled="menuRow.bytes >= SCRATCH_READ_LIMIT_BYTES" :title="menuRow.bytes >= SCRATCH_READ_LIMIT_BYTES ? TOO_LARGE : undefined" @select="download(menuRow.path, menuRow.name)">
-          <Download class="size-3.5 text-muted-foreground" /> Download
-        </DropdownMenuItem>
+        <template v-else>
+          <DropdownMenuItem class="text-xs" :disabled="!inData(menuRow.path) && menuRow.bytes >= SCRATCH_READ_LIMIT_BYTES" :title="!inData(menuRow.path) && menuRow.bytes >= SCRATCH_READ_LIMIT_BYTES ? TOO_LARGE : undefined" @select="download(menuRow.path, menuRow.name)">
+            <Download class="size-3.5 text-muted-foreground" /> Download
+          </DropdownMenuItem>
+          <DropdownMenuItem v-if="linkedRow(menuRow)" class="text-xs" :disabled="staging" title="Copies the bytes into the workspace, so reads stop streaming from the source" @select="stageCopy(menuRow)">
+            <CloudDownload class="size-3.5 text-muted-foreground" /> Stage to notebook
+          </DropdownMenuItem>
+        </template>
         <DropdownMenuItem class="text-xs" :disabled="Boolean(copyReasonAll(menuRows)) || copyBusy" :title="copyReasonAll(menuRows) ?? undefined" @select="startCopy(menuRows)">
           <Copy class="size-3.5 text-muted-foreground" /> {{ menuCount > 1 ? `Copy ${menuCount} items to bucket` : 'Copy to bucket' }}
         </DropdownMenuItem>
