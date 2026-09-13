@@ -34,9 +34,40 @@ function blank(): ScratchDirectory {
   return { entries: null, loading: false, error: null, starting: false, fetchedAt: 0 }
 }
 
+const EXPANDED_KEY = 'notebook-files:expanded'
+const EXPANDED_SESSIONS = 20
+
+/** The open folders of recent sessions, so a reload shows the tree as it was left. */
+function storedExpanded(): Record<string, string[]> {
+  try {
+    const raw = globalThis.localStorage?.getItem(EXPANDED_KEY)
+    const parsed: unknown = raw ? JSON.parse(raw) : {}
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, string[]>) : {}
+  } catch {
+    return {}
+  }
+}
+
+function restoreExpanded(jobId: string): Set<string> {
+  const paths = jobId ? storedExpanded()[jobId] : undefined
+  return new Set(Array.isArray(paths) ? paths.filter((path) => typeof path === 'string') : [])
+}
+
+function persistExpanded(jobId: string, paths: Set<string>) {
+  if (!jobId) return
+  try {
+    const all = storedExpanded()
+    delete all[jobId]
+    const entries = [...Object.entries(all), [jobId, [...paths]] as const].slice(-EXPANDED_SESSIONS)
+    globalThis.localStorage?.setItem(EXPANDED_KEY, JSON.stringify(Object.fromEntries(entries)))
+  } catch {
+    // A blocked or full storage only loses the remembered layout.
+  }
+}
+
 export function useSessionFiles(session: SessionFilesSource) {
   const directories = shallowRef<Record<string, ScratchDirectory>>({})
-  const expanded = ref<Set<string>>(new Set())
+  const expanded = ref<Set<string>>(restoreExpanded(session.jobId.value))
   let generation = 0
   let disposed = false
   let lastStates: Record<string, string> = {}
@@ -108,6 +139,7 @@ export function useSessionFiles(session: SessionFilesSource) {
     const next = new Set(expanded.value)
     for (let folder: string | null = path; folder; folder = parentPath(folder)) next.add(folder)
     expanded.value = next
+    persistExpanded(session.jobId.value, next)
   }
 
   function toggle(path: string) {
@@ -115,6 +147,7 @@ export function useSessionFiles(session: SessionFilesSource) {
       const next = new Set(expanded.value)
       next.delete(path)
       expanded.value = next
+      persistExpanded(session.jobId.value, next)
       return
     }
     open(path)
@@ -130,7 +163,7 @@ export function useSessionFiles(session: SessionFilesSource) {
   function clear() {
     generation += 1
     directories.value = {}
-    expanded.value = new Set()
+    expanded.value = restoreExpanded(session.jobId.value)
     lastStates = {}
   }
 

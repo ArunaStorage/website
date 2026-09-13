@@ -45,6 +45,28 @@ afterEach(() => {
 })
 
 describe('useSessionFiles', () => {
+  it('remembers the open folders of a session', async () => {
+    const store = new Map<string, string>()
+    vi.stubGlobal('localStorage', { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value) } })
+    try {
+      listScratch.mockImplementation(async (_job: string, path: string) => listing(path, []))
+      const scope = effectScope()
+      const files = scope.run(() => useSessionFiles(fakeSession()))!
+      files.toggle('data/sub')
+      await settle()
+      expect([...files.expanded.value]).toEqual(expect.arrayContaining(['data', 'data/sub']))
+      scope.stop()
+      const again = effectScope().run(() => useSessionFiles(fakeSession()))!
+      expect([...again.expanded.value]).toEqual(expect.arrayContaining(['data', 'data/sub']))
+      again.toggle('data/sub')
+      const third = effectScope().run(() => useSessionFiles(fakeSession()))!
+      expect(third.expanded.value.has('data/sub')).toBe(false)
+      expect(third.expanded.value.has('data')).toBe(true)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('serves a folder from the cache inside the freshness window', async () => {
     const session = fakeSession()
     listScratch.mockResolvedValue(listing('data', ['a.txt']))
