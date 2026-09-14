@@ -26,11 +26,10 @@ import { useTes, isTesUnsupported } from '@/composables/useTes'
 import { useJobs } from '@/composables/useJobs'
 import { useAruna } from '@/composables/useAruna'
 import { useRealmNodes } from '@/composables/useRealmNodes'
-import { useHiddenTasks } from '@/composables/useHiddenTasks'
 import { useS3 } from '@/composables/useS3'
 import { useRefresh } from '@/composables/useRefresh'
 import type { MetadataDocumentListItem } from '@/lib/api'
-import { formatJobProgress, type JobStatusResponse } from '@/lib/jobs'
+import { deleteErrorMessage, formatJobProgress, type JobStatusResponse } from '@/lib/jobs'
 import { POLL_IDLE_MS, follow, onWake } from '@/lib/poll'
 import {
   TES_GROUP_TAG,
@@ -55,14 +54,13 @@ const NODE_LABEL_KEY = 'aruna-engine.org/node'
 const NODE_LABEL_TAG = `${TES_LABEL_TAG_PREFIX}${NODE_LABEL_KEY}`
 
 const props = defineProps<{ taskId: string; open: boolean }>()
-const emit = defineEmits<{ (e: 'update:open', v: boolean): void; (e: 'canceled'): void; (e: 'hidden'): void }>()
+const emit = defineEmits<{ (e: 'update:open', v: boolean): void; (e: 'canceled'): void; (e: 'deleted'): void }>()
 
 const router = useRouter()
 const { getTask, cancelTask, busy } = useTes()
-const { getJob: getNativeJob } = useJobs()
+const { getJob: getNativeJob, deleteJob } = useJobs()
 const { myGroups, apiBaseUrl, metadataAtPath } = useAruna()
 const { displayName } = useRealmNodes()
-const { hide } = useHiddenTasks()
 const s3 = useS3()
 
 const task = ref<TesTask | null>(null)
@@ -586,7 +584,7 @@ function rerun() {
   void router.push({ name: 'compute-new', query: { rerun: props.taskId } })
 }
 
-// ── Delete (client-side hide; TES has no delete endpoint yet) ────────────────
+// ── Delete (finished runs; the node removes it for every client) ─────────────
 const confirmingDelete = ref(false)
 const deleteBusy = ref(false)
 const deleteError = ref<string | null>(null)
@@ -594,24 +592,21 @@ function requestDelete() {
   confirmingDelete.value = true
   deleteError.value = null
 }
-// An active task is canceled first so the hide never orphans a running job.
+// A run still working is cancelled with Cancel first; one already gone counts as deleted.
 async function confirmDelete() {
   deleteBusy.value = true
   deleteError.value = null
   try {
-    if (canCancel.value) {
-      await cancelTask(props.taskId)
-      emit('canceled')
-    }
-    hide(props.taskId)
-    confirmingDelete.value = false
-    emit('hidden')
-    emit('update:open', false)
+    await deleteJob(props.taskId)
   } catch (err) {
-    deleteError.value = errorMessage(err)
+    deleteError.value = deleteErrorMessage(err)
   } finally {
     deleteBusy.value = false
   }
+  if (deleteError.value) return
+  confirmingDelete.value = false
+  emit('deleted')
+  emit('update:open', false)
 }
 </script>
 
@@ -848,22 +843,22 @@ async function confirmDelete() {
               <Button variant="ghost" size="sm" :disabled="busy" @click="confirmingCancel = false">Keep running</Button>
             </template>
           </template>
-          <div class="ml-auto flex items-center gap-2">
+          <div v-if="!canCancel" class="ml-auto flex items-center gap-2">
             <template v-if="!confirmingDelete">
               <Button variant="outline" size="sm" class="text-destructive hover:text-destructive" :disabled="deleteBusy" @click="requestDelete">
-                <Trash2 class="h-3.5 w-3.5" /> {{ canCancel ? 'Cancel and delete' : 'Delete' }}
+                <Trash2 class="h-3.5 w-3.5" /> Delete
               </Button>
             </template>
             <template v-else>
               <Button variant="destructive" size="sm" :disabled="deleteBusy || busy" @click="confirmDelete">
-                <Trash2 class="h-3.5 w-3.5" /> {{ deleteBusy ? 'Deleting…' : canCancel ? 'Confirm cancel and delete' : 'Confirm delete' }}
+                <Trash2 class="h-3.5 w-3.5" /> {{ deleteBusy ? 'Deleting…' : 'Confirm delete' }}
               </Button>
               <Button variant="ghost" size="sm" :disabled="deleteBusy" @click="confirmingDelete = false">Keep</Button>
             </template>
           </div>
         </div>
         <p v-if="confirmingDelete" class="text-[11px] text-muted-foreground">
-          {{ canCancel ? 'Cancels the run first, then removes' : 'Removes' }} it from the run list in this browser only; the record stays on the node and reappears via the Deleted filter.
+          Removes the run from the run list in every browser. Its outputs and run dataset stay.
         </p>
         <p v-if="cancelError" class="text-[11px] text-destructive">{{ cancelError }}</p>
         <p v-if="deleteError" class="text-[11px] text-destructive">{{ deleteError }}</p>

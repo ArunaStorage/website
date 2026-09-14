@@ -241,6 +241,17 @@ const TES_ACTIVE_STATES: ReadonlySet<TesState> = new Set<TesState>([
   'CANCELING',
 ])
 
+/** A run started longer ago than this leaves the run list, unless it is still working. */
+export const RUN_LIST_WINDOW_MS = 48 * 60 * 60 * 1000
+const RUN_WORKING: ReadonlySet<TesState> = new Set<TesState>(['QUEUED', 'INITIALIZING', 'RUNNING', 'PAUSED', 'CANCELING'])
+
+/** True when the run belongs in the list at `nowMs`; a run without a start time stays. */
+export function runListed(task: Pick<TesTask, 'state' | 'creation_time'>, nowMs: number): boolean {
+  if (task.state && RUN_WORKING.has(task.state)) return true
+  const created = task.creation_time ? Date.parse(task.creation_time) : NaN
+  return !Number.isFinite(created) || nowMs - created <= RUN_LIST_WINDOW_MS
+}
+
 export function isTerminalTesState(state: TesState | undefined): boolean {
   return state === undefined ? false : TES_TERMINAL_STATES.has(state)
 }

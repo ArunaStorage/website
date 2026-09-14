@@ -18,21 +18,24 @@ import NewRunMenu from '@/components/compute/NewRunMenu.vue'
 import { useTes, isTesUnsupported } from '@/composables/useTes'
 import { useAruna } from '@/composables/useAruna'
 import { useAuth } from '@/composables/useAuth'
-import { useHiddenTasks } from '@/composables/useHiddenTasks'
+import { useJobs } from '@/composables/useJobs'
+import { useNow } from '@/composables/useNow'
 import { useRefresh } from '@/composables/useRefresh'
 import { useFirstPaint } from '@/composables/useFirstPaint'
 import { errorMessage, formatDuration, formatResourceGb, relativeTime, truncateMiddle } from '@/lib/utils'
 import { follow, onWake } from '@/lib/poll'
+import { deleteErrorMessage } from '@/lib/jobs'
 import { sessionRuntime } from '@/lib/notebook/submit'
 import {
   TES_GROUP_TAG,
   isActiveTesState,
   isTerminalTesState,
+  runListed,
   type TesServiceInfo,
   type TesState,
   type TesTask,
 } from '@/lib/tes'
-import { ArchiveRestore, ChevronRight, Trash2 } from '@lucide/vue'
+import { ChevronRight, Trash2 } from '@lucide/vue'
 
 // Run list section of the unified Compute view. ComputeView gates the feature
 // flag and sign-in, but the panel tracks the session itself so a late or lost
@@ -87,9 +90,8 @@ async function loadServiceInfo(): Promise<number> {
 // ── State filter ─────────────────────────────────────────────────────────────
 // Chips cover only states the facade actually emits (aruna api tes.rs):
 // PAUSED and PREEMPTED never occur; UNKNOWN (indeterminate) counts as failed.
-// 'deleted' is not a TES state: it lists client-side hidden tasks instead.
 type StateFilterGroup = 'active' | 'done' | 'failed' | 'canceled'
-type StateGroup = 'all' | StateFilterGroup | 'deleted'
+type StateGroup = 'all' | StateFilterGroup
 const GROUP_STATES: Record<StateFilterGroup, TesState[]> = {
   active: ['QUEUED', 'INITIALIZING', 'RUNNING', 'CANCELING'],
   done: ['COMPLETE'],
@@ -105,26 +107,24 @@ const GROUP_LABELS: Record<StateFilterGroup, string> = {
 const stateGroup = ref<StateGroup>('all')
 
 const tasks = ref<TesTask[]>([])
-const { hide, unhide, isHidden } = useHiddenTasks()
-const hiddenTasks = computed(() => tasks.value.filter((task) => isHidden(task.id)))
-const shownTasks = computed(() => tasks.value.filter((task) => !isHidden(task.id)))
+const now = useNow(60_000)
+// Finished runs older than the list window drop out; a link still opens them.
+const shownTasks = computed(() => tasks.value.filter((task) => runListed(task, now.value)))
+const olderCount = computed(() => tasks.value.length - shownTasks.value.length)
 
 function inGroup(task: TesTask, group: StateFilterGroup): boolean {
   return !!task.state && GROUP_STATES[group].includes(task.state)
 }
 const visibleTasks = computed(() => {
   const group = stateGroup.value
-  if (group === 'deleted') return hiddenTasks.value
   if (group === 'all') return shownTasks.value
   return shownTasks.value.filter((task) => inGroup(task, group))
 })
 const emptyGroupLabel = computed(() => {
   const group = stateGroup.value
   if (group === 'all') return ''
-  return group === 'deleted' ? 'deleted ' : `${GROUP_LABELS[group].toLowerCase()} `
+  return `${GROUP_LABELS[group].toLowerCase()} `
 })
-// The Deleted chip only exists while some loaded task is hidden: a subtle
-// escape hatch, not a permanent empty bucket.
 const chipOptions = computed(() => [
   { value: 'all', label: 'All', count: shownTasks.value.length },
   ...(Object.keys(GROUP_LABELS) as StateFilterGroup[]).map((group) => ({
@@ -132,11 +132,7 @@ const chipOptions = computed(() => [
     label: GROUP_LABELS[group],
     count: shownTasks.value.filter((task) => inGroup(task, group)).length,
   })),
-  ...(hiddenTasks.value.length ? [{ value: 'deleted', label: 'Deleted', count: hiddenTasks.value.length }] : []),
 ])
-watch(hiddenTasks, (list) => {
-  if (!list.length && stateGroup.value === 'deleted') stateGroup.value = 'all'
-})
 
 // ── Row-level delete (two-step inline confirm) ───────────────────────────────
 const confirmingDeleteId = ref<string | null>(null)
@@ -146,10 +142,25 @@ function requestRowDelete(id: string) {
   window.clearTimeout(rowDeleteTimer)
   rowDeleteTimer = window.setTimeout(() => (confirmingDeleteId.value = null), 4000)
 }
-function confirmRowDelete(id: string) {
+// The node removes the run for every client; one already gone counts as deleted.
+const { deleteJob } = useJobs()
+const deleteError = ref<string | null>(null)
+async function confirmRowDelete(id: string) {
   window.clearTimeout(rowDeleteTimer)
   confirmingDeleteId.value = null
-  hide(id)
+  deleteError.value = null
+  try {
+    await deleteJob(id)
+  } catch (err) {
+    deleteError.value = deleteErrorMessage(err)
+    if (deleteError.value) return
+  }
+  tasks.value = tasks.value.filter((task) => task.id !== id)
+}
+function onDeleted() {
+  const id = openTaskId.value
+  tasks.value = tasks.value.filter((task) => task.id !== id)
+  closeTask()
 }
 
 // ── Task list ────────────────────────────────────────────────────────────────
@@ -272,11 +283,14 @@ function reload() {
 const { busy: reloadBusy, refresh: onReload } = useRefresh(reload)
 const spinning = computed(() => reloadBusy.value || refreshing.value)
 
-// Hiding every run brings the run-mode chooser back; the Deleted view only
-// stands aside while it still has something to show.
-const listEmpty = computed(
-  () => !shownTasks.value.length && (stateGroup.value !== 'deleted' || !hiddenTasks.value.length),
-)
+// No listed run brings the run-mode chooser back.
+const listEmpty = computed(() => !shownTasks.value.length)
+// Pages run newest first, so a page reaching past the window ends the list.
+const moreListed = computed(() => {
+  const last = tasks.value[tasks.value.length - 1]
+  return Boolean(nextPageToken.value) && (!last || runListed({ creation_time: last.creation_time }, now.value))
+})
+const olderHidden = computed(() => olderCount.value > 0 || (Boolean(nextPageToken.value) && !moreListed.value))
 const shellState = computed<'loading' | 'error' | 'empty' | 'ready'>(() => {
   switch (listState.value) {
     case 'idle':
@@ -299,11 +313,14 @@ const painted = useFirstPaint(() =>
 const emptyTitle = computed(() => {
   if (listState.value === 'unsupported') return 'Runs cannot be listed until this node accepts them.'
   if (listState.value === 'signed-out') return 'Sign in to see the runs you started on this node.'
-  return 'No runs yet'
+  return olderHidden.value ? 'No runs in the last 48 hours' : 'No runs yet'
 })
-const emptyDescription = computed(() =>
-  listState.value === 'ready' ? 'Start your first run with a quick script or a custom run.' : undefined,
-)
+const emptyDescription = computed(() => {
+  if (listState.value !== 'ready') return undefined
+  return olderHidden.value
+    ? 'Older finished runs are not listed. Start a new run with a quick script or a custom run.'
+    : 'Start your first run with a quick script or a custom run.'
+})
 
 async function init() {
   const requestId = await loadServiceInfo()
@@ -328,12 +345,14 @@ watch([currentUser, authPending], ([user], [previous]) => {
   else if (user.id !== previous?.id) void init()
 })
 
-// Section-owned auto-refresh: only re-fetch page one (a multi-page view must
-// not silently truncate) and only while some listed task is still active.
+// Section-owned auto-refresh of page one (a multi-page view must not silently
+// truncate): fast while a run works, slower otherwise, so deletions and runs
+// from other browsers still arrive.
 function pollIdle(): boolean {
-  if (!currentUser.value || refreshing.value) return true
-  if (pagesLoaded.value !== 1) return true
-  return !tasks.value.some((t) => isActiveTesState(t.state))
+  return !currentUser.value || refreshing.value || pagesLoaded.value !== 1
+}
+function pollDelay(): number {
+  return tasks.value.some((t) => isActiveTesState(t.state)) ? 10_000 : 30_000
 }
 async function pollList() {
   if (pollIdle()) return
@@ -343,7 +362,7 @@ let stopFollow: (() => void) | undefined
 let stopWake: (() => void) | undefined
 onMounted(() => {
   void init()
-  stopFollow = follow(pollList, () => 10_000)
+  stopFollow = follow(pollList, pollDelay)
   stopWake = onWake(() => void pollList())
 })
 onUnmounted(() => {
@@ -390,6 +409,7 @@ onUnmounted(() => {
         <FilterChips v-model="stateGroup" :options="chipOptions" aria-label="Filter runs by state" />
       </template>
       <template #tools>
+        <span v-if="deleteError" class="text-[11px] text-destructive">{{ deleteError }}</span>
         <span v-if="lastPollError" class="text-[11px] text-muted-foreground" :title="lastPollError">Refresh failed, retrying.</span>
         <RefreshButton :busy="spinning" sr-label="Refresh runs" @click="onReload" />
       </template>
@@ -398,10 +418,6 @@ onUnmounted(() => {
       <template #empty-actions>
         <div v-if="listState === 'ready'" class="space-y-4">
           <NewRunMenu size="sm" />
-          <p v-if="hiddenTasks.length" class="text-xs text-muted-foreground">
-            {{ hiddenTasks.length }} deleted {{ hiddenTasks.length === 1 ? 'run' : 'runs' }} hidden from this list.
-            <button type="button" class="text-primary hover:underline" @click="stateGroup = 'deleted'">Show</button>
-          </p>
         </div>
       </template>
 
@@ -463,28 +479,19 @@ onUnmounted(() => {
             </td>
             <td class="px-5 py-2.5 text-right">
               <div class="flex items-center justify-end gap-1">
-                <Button
-                  v-if="stateGroup === 'deleted' && task.id"
-                  variant="outline"
-                  size="sm"
-                  :aria-label="`Restore ${task.name || 'run'} to the list`"
-                  @click.stop="unhide(task.id)"
-                >
-                  <ArchiveRestore class="h-3.5 w-3.5" /> Restore
-                </Button>
-                <template v-else-if="task.id && isTerminalTesState(task.state)">
+                <template v-if="task.id && isTerminalTesState(task.state)">
                   <Button
                     v-if="confirmingDeleteId !== task.id"
                     variant="ghost"
                     size="icon-sm"
                     class="text-muted-foreground hover:text-destructive"
-                    :aria-label="`Delete ${task.name || 'run'} from the list`"
-                    title="Delete from list (this browser only)"
+                    :aria-label="`Delete ${task.name || 'run'}`"
+                    title="Delete this run"
                     @click.stop="requestRowDelete(task.id)"
                   >
                     <Trash2 class="h-3.5 w-3.5" />
                   </Button>
-                  <Button v-else variant="destructive" size="sm" title="Removes it from this browser's list only" @click.stop="confirmRowDelete(task.id)">
+                  <Button v-else variant="destructive" size="sm" title="Removes the run from the list in every browser" @click.stop="confirmRowDelete(task.id)">
                     <Trash2 class="h-3.5 w-3.5" /> Delete?
                   </Button>
                 </template>
@@ -495,10 +502,11 @@ onUnmounted(() => {
         </tbody>
       </table>
 
-      <template v-if="nextPageToken" #footer>
-        <Button variant="ghost" size="sm" :disabled="refreshing" :aria-busy="refreshing" @click="fetchList({ more: true })">
+      <template v-if="moreListed || olderHidden" #footer>
+        <Button v-if="moreListed" variant="ghost" size="sm" :disabled="refreshing" :aria-busy="refreshing" @click="fetchList({ more: true })">
           <Spinner v-if="refreshing" label="Loading more runs" class="text-current" /> Load more
         </Button>
+        <span v-else class="text-[11px] text-muted-foreground">Finished runs started more than 48 hours ago are not listed.</span>
       </template>
     </ListShell>
 
@@ -508,7 +516,7 @@ onUnmounted(() => {
       :open="!!openTaskId"
       @update:open="(v) => !v && closeTask()"
       @canceled="reload"
-      @hidden="closeTask"
+      @deleted="onDeleted"
     />
   </div>
 </template>

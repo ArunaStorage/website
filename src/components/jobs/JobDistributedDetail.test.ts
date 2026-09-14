@@ -170,6 +170,13 @@ function findAll(node: HostNode, match: (node: HostNode) => boolean): HostNode[]
   return match(node) ? [node, ...hits] : hits
 }
 
+async function flushPanel() {
+  for (let i = 0; i < 3; i += 1) {
+    await Promise.resolve()
+    await nextTick()
+  }
+}
+
 async function press(root: HostNode, text: string) {
   const target = findAll(root, (node) => node.tag === 'button' && content(node).includes(text))[0]
   if (!target) throw new Error(`No button named ${text}`)
@@ -243,7 +250,7 @@ const family: JobFamilyResponse = {
   },
 }
 
-function taskPanel(getTask: unknown, getJob: unknown): Component {
+function taskPanel(getTask: unknown, getJob: unknown, deleteJob: unknown = vi.fn()): Component {
   return compileClientComponent(new URL('../compute/TaskDetailPanel.vue', import.meta.url), {
     vue: VueRuntime,
     'vue-router': { RouterLink: RouterLinkStub, useRouter: () => ({ push: vi.fn() }) },
@@ -278,7 +285,7 @@ function taskPanel(getTask: unknown, getJob: unknown): Component {
       isTesUnsupported: () => false,
       useTes: () => ({ getTask, cancelTask: vi.fn(), busy: ref(false) }),
     },
-    '@/composables/useJobs': { useJobs: () => ({ getJob }) },
+    '@/composables/useJobs': { useJobs: () => ({ getJob, deleteJob }) },
     '@/composables/useRealmNodes': { useRealmNodes: () => ({ displayName: (id: string) => id }) },
     '@/composables/useRefresh': { useRefresh },
     '@/composables/useAruna': {
@@ -288,7 +295,6 @@ function taskPanel(getTask: unknown, getJob: unknown): Component {
         metadataAtPath: vi.fn(async () => null),
       }),
     },
-    '@/composables/useHiddenTasks': { useHiddenTasks: () => ({ hide: vi.fn() }) },
     '@/composables/useS3': {
       useS3: () => ({ endpoint: ref(null), hasActiveKey: ref(true), ensureSession: async () => {} }),
     },
@@ -1007,6 +1013,41 @@ describe('distributed job detail components', () => {
 
     expect(dialog?.props['data-file-dialog']).toBe('reports/results/demo/chart.png@01VERSION')
     mounted.app.unmount()
+    wake.mockRestore()
+    followSpy.mockRestore()
+  })
+
+  it('deletes a finished run on the node and keeps a refused one open', async () => {
+    const base = { id: 'run', executors: [{ image: 'alpine', command: ['sh'] }], inputs: [], outputs: [], logs: [], tags: {} }
+    const getJob = vi.fn(async () => ({ family: null }))
+    const wake = vi.spyOn(Poll, 'onWake').mockImplementation(() => () => {})
+    const followSpy = vi.spyOn(Poll, 'follow').mockImplementation(() => () => {})
+
+    // A run still working offers Cancel, never Delete.
+    const running = await mount(taskPanel(vi.fn(async () => ({ ...base, state: 'RUNNING' })), getJob), { taskId: 'run', open: true })
+    expect(content(running.root)).not.toContain('Delete')
+    running.app.unmount()
+
+    const deleteJob = vi.fn(async () => undefined)
+    const onDeleted = vi.fn()
+    const done = await mount(taskPanel(vi.fn(async () => ({ ...base, state: 'COMPLETE' })), getJob, deleteJob), { taskId: 'run', open: true, onDeleted })
+    await press(done.root, 'Delete')
+    expect(content(done.root)).toContain('in every browser')
+    await press(done.root, 'Confirm delete')
+    await flushPanel()
+    expect(deleteJob).toHaveBeenCalledWith('run')
+    expect(onDeleted).toHaveBeenCalledOnce()
+    done.app.unmount()
+
+    const refused = vi.fn(async () => { throw new ApiError(409, 'the run has not finished') })
+    const onRefused = vi.fn()
+    const late = await mount(taskPanel(vi.fn(async () => ({ ...base, state: 'COMPLETE' })), getJob, refused), { taskId: 'run', open: true, onDeleted: onRefused })
+    await press(late.root, 'Delete')
+    await press(late.root, 'Confirm delete')
+    await flushPanel()
+    expect(onRefused).not.toHaveBeenCalled()
+    expect(content(late.root)).toContain('has not finished on the node yet')
+    late.app.unmount()
     wake.mockRestore()
     followSpy.mockRestore()
   })

@@ -9,6 +9,8 @@ import {
   isReportAbsent,
   isReportCursorConflict,
   isSubmitRetryable,
+  deleteErrorMessage,
+  deleteJob,
   jobLabel,
   placementVerdict,
   reportPendingState,
@@ -290,6 +292,26 @@ function submitBody(created: boolean, state: string) {
     status_url: 'https://node.test/api/v1/compute/jobs/01JOB',
   }
 }
+
+describe('run deletion', () => {
+  it('sends DELETE for the run and accepts an empty answer', async () => {
+    const calls = stubFetch(() => new Response(null, { status: 204 }))
+
+    await expect(deleteJob('01 RUN', client)).resolves.toBeUndefined()
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0].url).toBe('https://node.test/api/v1/compute/jobs/01%20RUN')
+    expect(calls[0].method).toBe('DELETE')
+    expect(calls[0].auth).toBe('Bearer token')
+  })
+
+  it('treats a run already gone as deleted and words the refusals', () => {
+    expect(deleteErrorMessage(new ApiError(404, 'not found'))).toBeNull()
+    expect(deleteErrorMessage(new ApiError(409, 'busy'))).toContain('has not finished')
+    expect(deleteErrorMessage(new ApiError(403, 'no'))).toContain('may not delete')
+    expect(deleteErrorMessage(new Error('offline'))).toBe('offline')
+  })
+})
 
 describe('native job submission', () => {
   it('posts the request body verbatim and reports a fresh admission', async () => {

@@ -314,7 +314,6 @@ const TaskDetailPanel = compileClientComponent(url('components/compute/TaskDetai
   '@/composables/useTes': Tes,
   '@/composables/useJobs': JobsComposable,
   '@/composables/useAruna': arunaModule,
-  '@/composables/useHiddenTasks': { useHiddenTasks: () => ({ hide: vi.fn() }) },
   '@/composables/useS3': S3,
   '@/composables/useObjectPreview': ObjectPreview,
   '@/composables/useRefresh': RefreshComposable,

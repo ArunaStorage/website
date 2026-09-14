@@ -298,6 +298,21 @@ export function cancelJob(jobId: string, client: ApiClientOptions): Promise<JobS
   return apiRequest<JobStatusResponse>(`/compute/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }, client)
 }
 
+// DELETE /compute/jobs/{id}: removes a finished run from the lists of the node
+// that admitted it, for every client. 409 while it runs, 404 once it is gone.
+export async function deleteJob(jobId: string, client: ApiClientOptions): Promise<void> {
+  await apiRequest<void>(`/compute/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' }, client)
+}
+
+/** Why a run could not be deleted, in plain words; a run already gone counts as deleted. */
+export function deleteErrorMessage(error: unknown): string | null {
+  if (!(error instanceof ApiError)) return errorMessage(error)
+  if (error.status === 404) return null
+  if (error.status === 409) return 'This run has not finished on the node yet. Try again once it stopped.'
+  if (error.status === 403) return 'This token may not delete runs.'
+  return error.message
+}
+
 // ── Native submission ────────────────────────────────────────────────────────
 // POST /compute/jobs: the surface the GA4GH facade maps onto. It expresses what TES
 // cannot: per-input composition modes, an exact version pin, and the collision

@@ -10,6 +10,7 @@ import {
   pruneTesTask,
   tesPlacementLike,
   tesPlacementTags,
+  runListed,
 } from './tes'
 import { placementVerdict } from './jobs'
 
@@ -103,5 +104,21 @@ describe('placement label constraints', () => {
       [`${TES_LABEL_TAG_PREFIX}region`]: 'eu-central',
     })
     expect(tesPlacementTags(tags).labelConstraints).toEqual(labels)
+  })
+})
+
+describe('run list window', () => {
+  const now = Date.parse('2026-09-14T12:00:00Z')
+
+  it('lists finished runs of the last 48 hours and hides older ones', () => {
+    expect(runListed({ state: 'COMPLETE', creation_time: '2026-09-12T12:00:00Z' }, now)).toBe(true)
+    expect(runListed({ state: 'COMPLETE', creation_time: '2026-09-12T11:59:59Z' }, now)).toBe(false)
+    expect(runListed({ state: 'UNKNOWN', creation_time: '2026-09-01T00:00:00Z' }, now)).toBe(false)
+  })
+
+  it('keeps a run that still works, and one without a start time', () => {
+    expect(runListed({ state: 'RUNNING', creation_time: '2026-09-01T00:00:00Z' }, now)).toBe(true)
+    expect(runListed({ state: 'CANCELING', creation_time: '2026-09-01T00:00:00Z' }, now)).toBe(true)
+    expect(runListed({ state: 'COMPLETE' }, now)).toBe(true)
   })
 })

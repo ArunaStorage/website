@@ -6,6 +6,7 @@ import { useAruna } from '@/composables/useAruna'
 import { useAuth } from '@/composables/useAuth'
 import {
   cancelJob as requestCancelJob,
+  deleteJob as requestDeleteJob,
   downloadJobArtifact as requestDownloadArtifact,
   getJob as requestGetJob,
   getJobAudit as requestGetJobAudit,
@@ -373,5 +374,10 @@ export function useJobs() {
     return requestDownloadArtifact(jobId, resolveClient())
   }
 
-  return { jobsEnabled, getJob, getJobAudit, getJobReport, headJobArtifact, downloadJobArtifact }
+  function deleteJob(jobId: string): Promise<void> {
+    assertEnabled()
+    return requestDeleteJob(jobId, resolveClient())
+  }
+
+  return { jobsEnabled, getJob, getJobAudit, getJobReport, headJobArtifact, downloadJobArtifact, deleteJob }
 }
