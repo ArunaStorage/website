@@ -357,7 +357,10 @@ export function createNotebookSession(notebook: NotebookStore) {
       if ((await refresh()) && active() && !ended.value) openStream()
     } catch (cause) {
       if (!active()) return
-      const message = submitErrorMessage(cause)
+      // A session refused with 403 most often lacks write access to its folder.
+      const message = cause instanceof ApiError && cause.status === 403
+        ? 'You may not start a session for this group, or may not write the bucket folder this notebook mounts.'
+        : submitErrorMessage(cause)
       // A job that was admitted but cannot be followed must not block Start,
       // and must not keep a quota slot either.
       if (submitted) {

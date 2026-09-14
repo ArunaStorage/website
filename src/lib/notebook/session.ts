@@ -58,7 +58,7 @@ export interface StagedInputRequest {
   key: string
   version_id?: string
   source_node_id?: string
-  /** Full key inside the workspace bucket; the portal writes under data/. */
+  /** Full key inside the workspace bucket; the portal writes under the mounted folder. */
   dest_key: string
   /** For a source that is itself a reference: pull the bytes (default) or link them. */
   strategy?: 'snapshot' | 'reference'

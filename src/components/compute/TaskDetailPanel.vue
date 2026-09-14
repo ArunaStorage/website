@@ -819,6 +819,7 @@ async function confirmDelete() {
             <RouterLink v-if="runCrate" class="inline-flex items-center gap-1.5 text-primary hover:underline" :to="{ name: 'dataset', params: { id: runCrate.document_id } }">
               <FileText class="h-3.5 w-3.5" /> Open
             </RouterLink>
+            <span v-else-if="sessionRuntime(task?.tags) !== null" class="text-muted-foreground">none, a notebook session keeps its report instead</span>
             <span v-else class="text-muted-foreground">written once the run completes</span>
           </div>
         </section>

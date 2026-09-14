@@ -610,6 +610,23 @@ describe('createNotebookSession', () => {
     scope.stop()
   })
 
+  it('names the mounted folder when a start is refused', async () => {
+    const { session: store, scope } = await setup()
+    jobs.submitJob.mockRejectedValue(new ApiError(403, 'forbidden'))
+
+    await store.start({
+      groupId: 'group-1',
+      name: 'counts',
+      runtime: 'python-notebook',
+      workspaceBucket: 'lab-data',
+      mount: { prefix: 'raw/', path: '/work/data' },
+    })
+
+    expect(store.error.value).toContain('may not write the bucket folder this notebook mounts')
+    expect(store.running.value).toBe(false)
+    scope.stop()
+  })
+
   it('clears the outputs of a cell it sends', async () => {
     const { notebook, session: store, scope } = await setup()
     notebook.patchMeta({ job_id: '01JOB', executor_node_id: 'node-a' })
