@@ -378,6 +378,11 @@ export interface SubmitExecutionRequest {
   runtime?: string
   /** A shorter idle timeout for a session; the node clamps it to the realm's. */
   session_idle_after_ms?: number
+  /**
+   * Which folder of the workspace bucket a session mounts (empty for the whole
+   * bucket) and the kernel folder it appears at. Omitted: data/ at /work/data.
+   */
+  session_mount?: { prefix?: string; path?: string }
 }
 
 export interface SubmitJobResponse {

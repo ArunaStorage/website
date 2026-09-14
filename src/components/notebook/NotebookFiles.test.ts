@@ -11,6 +11,7 @@ vi.mock('@/lib/notebook/session', async (importOriginal) => ({
 }))
 
 import * as sessionFiles from '@/composables/useSessionFiles'
+import * as documentLib from '@/lib/notebook/document'
 
 const LIMIT = 8 * 1024 * 1024
 type Entry = { name: string; kind: 'file' | 'dir'; bytes: number; modified_ms: number }
@@ -49,7 +50,7 @@ const InputStub = defineComponent({
   setup: (props, { attrs, emit }) => () => h('input', { ...attrs, value: props.modelValue, onInput: (event: { target: { value: string } }) => emit('update:modelValue', event.target.value) }),
 })
 
-async function render(options: { live?: boolean; running?: boolean; starting?: boolean } = {}) {
+async function render(options: { live?: boolean; running?: boolean; starting?: boolean; mount?: { prefix: string; path: string } } = {}) {
   const generation = ref(1)
   const activeCellId = ref('first')
   const noteCellInputs = vi.fn()
@@ -91,7 +92,7 @@ async function render(options: { live?: boolean; running?: boolean; starting?: b
     vue: VueRuntime,
     '@lucide/vue': new Proxy({}, { get: () => Empty }),
     '@/composables/notebookContext': { injectNotebook: () => ({
-      notebook: { generation, activeCellId, noteCellInputs, meta: ref({ workspace_bucket: 'workspace', group_id: 'group' }) },
+      notebook: { generation, activeCellId, noteCellInputs, meta: ref({ workspace_bucket: 'workspace', group_id: 'group', mount: options.mount }) },
       session,
     }) },
     '@/composables/useS3': { useS3: () => s3 },
@@ -100,7 +101,7 @@ async function render(options: { live?: boolean; running?: boolean; starting?: b
     '@/lib/notebook/session': { addSessionInputs, readScratch, SCRATCH_READ_LIMIT_BYTES: LIMIT },
     '@/lib/jobs': { getJob },
     '@/components/ui/Progress.vue': moduleDefault(defineComponent({ props: ['value', 'max'], setup: (props) => () => h('div', { role: 'progressbar', 'aria-valuenow': props.value, 'aria-valuemax': props.max }) })),
-    '@/lib/notebook/document': { NOTEBOOK_DATA_PREFIX: 'data/' },
+    '@/lib/notebook/document': documentLib,
     '@/lib/tes': { parseS3Url: () => ({ bucket: 'source', key: 'input.txt' }) },
     '@/lib/utils': { errorMessage: (cause: Error) => cause.message, formatBytes: (bytes: number) => `${bytes} B` },
     '@/components/ui/Button.vue': moduleDefault(ButtonStub),
@@ -446,6 +447,31 @@ describe('kernel file tree', () => {
     expect((await rowItem(root, 'tmp', 'Add files from buckets')).props.title).toBe('Only data/ is stored in the bucket')
     await click(await rowItem(root, 'sub', 'Import from connector'))
     expect(content(root)).toContain('Import into data/sub/')
+    app.unmount()
+  })
+
+  it('maps the mounted folder onto the bucket folder it mirrors', async () => {
+    // A whole-bucket mount keeps the kernel folder name and drops it from every key.
+    const { root, app, s3, addSessionInputs } = await render({ mount: { prefix: '', path: '/work/data' } })
+    const link = { href: '', download: '', click: vi.fn() }
+    vi.stubGlobal('document', { createElement: () => link })
+    await expand(root, 'data')
+    await expand(root, 'sub')
+    await (row(root, 'data/sub/a.csv').props.onDblclick as Handler)({})
+    await flush()
+    expect(s3.downloadUrl).toHaveBeenCalledWith('workspace', 'sub/a.csv', undefined, undefined, 'a.csv')
+    await click(await rowItem(root, 'sub', 'Add files from buckets'))
+    addSessionInputs.mockResolvedValue({ staged: [{ dest_key: 'sub/input.txt', bytes: 1, blake3: 'hash' }], pending: [], failed: [] })
+    await click(button(root, 'Pick input into workspace/sub/'))
+    expect(addSessionInputs).toHaveBeenCalledWith('job-a', [expect.objectContaining({ dest_key: 'sub/input.txt' })], { baseUrl: '/api/v1' })
+    await click(await rowItem(root, 'data', 'New folder'))
+    const field = element(root, (node) => node.props['aria-label'] === 'New folder name')
+    await typeValue(field, 'fresh')
+    await pressEnter(field)
+    expect(s3.createFolder).toHaveBeenCalledWith('workspace', '', 'fresh')
+    await click(await rowItem(root, 'a.csv', 'Copy to bucket'))
+    await click(button(root, 'Copy 1 of a.csv to dest'))
+    expect(s3.copyObject).toHaveBeenCalledWith({ bucket: 'workspace', key: 'sub/a.csv' }, 'dest', 'out/a.csv')
     app.unmount()
   })
 

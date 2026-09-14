@@ -1,12 +1,38 @@
 // Where a notebook and its files live in the workspace bucket, and the working
 // copy the browser keeps between saves. Every PUT is a kept version; the
 // portal saves on demand and two seconds after the last change.
+import type { NotebookAruna, NotebookMount } from './nbformat'
 import { dependencyFileName } from './runtimes'
 
 export const NOTEBOOK_PREFIX = 'notebooks/'
 export const NOTEBOOK_SUFFIX = '.ipynb'
-export const NOTEBOOK_DATA_PREFIX = 'data/'
+/** The kernel's working directory; the bucket is mounted in a folder below it. */
+export const SESSION_WORKDIR = '/work'
+/** What a notebook without a stored choice ran with: the data/ folder of its bucket. */
+export const STORED_MOUNT: NotebookMount = { prefix: 'data/', path: '/work/data' }
+/** A new notebook mirrors its whole bucket. */
+export const NEW_MOUNT: NotebookMount = { prefix: '', path: '/work/data' }
 export const AUTOSAVE_DELAY_MS = 2_000
+
+/** A typed bucket folder as a key prefix: empty for the whole bucket, else `/` terminated. */
+export function mountPrefix(folder: string): string {
+  const clean = folder.trim().split('/').filter(Boolean).join('/')
+  return clean ? `${clean}/` : ''
+}
+
+/** Where the bucket appears in the kernel, cleaned; older notebooks kept the data/ folder. */
+export function notebookMount(meta: Pick<NotebookAruna, 'mount'> | null | undefined): NotebookMount {
+  const mount = meta?.mount
+  if (!mount || typeof mount.prefix !== 'string' || typeof mount.path !== 'string') return STORED_MOUNT
+  const path = `/${mount.path.split('/').filter(Boolean).join('/')}`
+  const bare = path === '/' || path === SESSION_WORKDIR
+  return { prefix: mountPrefix(mount.prefix), path: bare ? STORED_MOUNT.path : path }
+}
+
+/** The mount folder relative to the working directory, for example `data`. */
+export function mountFolder(mount: NotebookMount): string {
+  return mount.path.startsWith(`${SESSION_WORKDIR}/`) ? mount.path.slice(SESSION_WORKDIR.length + 1) : mount.path
+}
 
 /** Folder part of a key, trailing slash included; empty at the bucket root. */
 export function keyFolder(key: string): string {

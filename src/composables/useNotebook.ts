@@ -7,6 +7,7 @@ import { isS3AuthError, useS3 } from '@/composables/useS3'
 import type { S3SessionReference } from '@/composables/s3/session'
 import {
   AUTOSAVE_DELAY_MS,
+  NEW_MOUNT,
   autosaveDue,
   clearWorkingCopy,
   notebookName,
@@ -165,7 +166,7 @@ export function createNotebook(bucket: Ref<string>, key: Ref<string>, seed: () =
         keepCopy = unsaved.changed_at_ms > storedMs
       }
       isNew.value = missing
-      notebook.value = text === null ? emptyNotebook(defaults) : parseNotebook(text, defaults)
+      notebook.value = text === null ? emptyNotebook({ ...defaults, mount: NEW_MOUNT }) : parseNotebook(text, defaults)
       // Everything this document does later happens where it was read from.
       loadedFrom = target
       lastSavedMs.value = Date.now()

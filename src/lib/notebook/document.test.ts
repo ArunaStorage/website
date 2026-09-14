@@ -6,7 +6,10 @@ import {
   clearWorkingCopy,
   dependencyKey,
   isNotebookKey,
+  mountFolder,
+  mountPrefix,
   notebookKey,
+  notebookMount,
   notebookName,
   notebookSlug,
   readResumePoint,
@@ -130,6 +133,23 @@ describe('autosaveDue', () => {
   })
 })
 
+describe('notebook mount', () => {
+  it('cleans a typed bucket folder into a key prefix', () => {
+    expect(mountPrefix('')).toBe('')
+    expect(mountPrefix(' / ')).toBe('')
+    expect(mountPrefix('raw/2024/')).toBe('raw/2024/')
+    expect(mountPrefix('/raw//2024')).toBe('raw/2024/')
+  })
+
+  it('falls back to the data/ folder older notebooks ran with', () => {
+    expect(notebookMount(undefined)).toEqual({ prefix: 'data/', path: '/work/data' })
+    expect(notebookMount({ mount: { prefix: 'raw/', path: '/work/project//raw/' } })).toEqual({ prefix: 'raw/', path: '/work/project/raw' })
+    expect(notebookMount({ mount: { prefix: '', path: '' } })).toEqual({ prefix: '', path: '/work/data' })
+    expect(notebookMount({ mount: { prefix: 'x', path: '/work/' } })).toEqual({ prefix: 'x/', path: '/work/data' })
+    expect(mountFolder({ prefix: '', path: '/work/project/raw' })).toBe('project/raw')
+  })
+})
+
 describe('sessionSubmitRequest', () => {
   const draft = {
     groupId: 'group-1',
@@ -192,6 +212,11 @@ describe('sessionSubmitRequest', () => {
       'Pick the bucket the notebook works in.',
     ])
     expect(sessionProblems(draft)).toEqual([])
+  })
+
+  it('mounts the data/ folder unless the notebook chose another', () => {
+    expect(sessionSubmitRequest(draft).session_mount).toEqual({ prefix: 'data/', path: '/work/data' })
+    expect(sessionSubmitRequest({ ...draft, mount: { prefix: '', path: '/work/bucket' } }).session_mount).toEqual({ prefix: '', path: '/work/bucket' })
   })
 
   it('keeps one idempotency key for the whole request', () => {

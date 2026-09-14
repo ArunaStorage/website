@@ -4,8 +4,8 @@
 import { placementTags } from '@/lib/tes'
 import { TES_NETWORK_TAG } from '@/lib/quickRuntimes'
 import type { ExecutionInputRequest, SubmitExecutionRequest } from '@/lib/jobs'
-import type { NotebookAruna, NotebookPlacement, NotebookResources } from './nbformat'
-import { dependencyKey } from './document'
+import type { NotebookAruna, NotebookMount, NotebookPlacement, NotebookResources } from './nbformat'
+import { STORED_MOUNT, dependencyKey, notebookMount } from './document'
 import { dependencyFileName, dependencyKind, sessionRuntimeById } from './runtimes'
 
 export const DEFAULT_KERNEL_CPU = 2
@@ -28,6 +28,8 @@ export interface SessionSubmitDraft {
   dependencyKind?: 'requirements' | 'conda' | 'deno'
   resources?: NotebookResources
   placement?: NotebookPlacement
+  /** The bucket folder the kernel sees and where; absent means the data/ folder. */
+  mount?: NotebookMount
   idempotencyKey: string
   /** A shorter idle timeout than the realm's; the node clamps it. */
   idleAfterMs?: number
@@ -67,6 +69,7 @@ export function sessionSubmitRequest(draft: SessionSubmitDraft): SubmitExecution
     collision_policy: 'reject',
     workspace: { mode: 'existing', bucket: draft.workspaceBucket },
     runtime: draft.runtime,
+    session_mount: { ...(draft.mount ?? STORED_MOUNT) },
   }
   const name = draft.name.trim()
   if (name) request.name = name
@@ -127,5 +130,6 @@ export function sessionStartDraft(
       : {}),
     resources: meta.resources,
     placement: meta.placement,
+    mount: notebookMount(meta),
   }
 }

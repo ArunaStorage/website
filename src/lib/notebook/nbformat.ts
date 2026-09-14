@@ -65,6 +65,14 @@ export interface NotebookPlacement {
   labels?: Record<string, string>
 }
 
+/** The folder of the workspace bucket the kernel sees, and where it appears. */
+export interface NotebookMount {
+  /** Key prefix in the bucket, empty for the whole bucket. */
+  prefix: string
+  /** Absolute kernel folder below the working directory. */
+  path: string
+}
+
 export interface NotebookAruna {
   version: 1
   runtime: string
@@ -75,6 +83,7 @@ export interface NotebookAruna {
   dependencies?: NotebookDependencies
   resources?: NotebookResources
   placement?: NotebookPlacement
+  mount?: NotebookMount
 }
 
 export interface Notebook {
@@ -190,6 +199,7 @@ function readAruna(value: unknown, defaults: Partial<NotebookAruna>): NotebookAr
     dependencies: record.dependencies && typeof record.dependencies === 'object' ? record.dependencies as NotebookDependencies : undefined,
     resources: record.resources && typeof record.resources === 'object' ? record.resources as NotebookResources : undefined,
     placement: record.placement && typeof record.placement === 'object' ? record.placement as NotebookPlacement : undefined,
+    mount: record.mount && typeof record.mount === 'object' ? record.mount as NotebookMount : undefined,
   }
 }
 

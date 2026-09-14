@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// The files inside the running kernel, cached per folder. data/ is the
+// The files inside the running kernel, cached per folder. One folder is the
 // workspace bucket mounted into the kernel; everything else is scratch.
 import { computed, nextTick, onScopeDispose, ref, watch } from 'vue'
 import Button from '@/components/ui/Button.vue'
@@ -21,7 +21,7 @@ import { useStagingReferences } from '@/composables/useStagingReferences'
 import { joinPath, parentPath, useSessionFiles } from '@/composables/useSessionFiles'
 import { getJob } from '@/lib/jobs'
 import { addSessionInputs, readScratch, SCRATCH_READ_LIMIT_BYTES, type ScratchEntry, type StagedInputRequest } from '@/lib/notebook/session'
-import { NOTEBOOK_DATA_PREFIX } from '@/lib/notebook/document'
+import { mountFolder, notebookMount } from '@/lib/notebook/document'
 import { parseS3Url, type TesDataRefEntry } from '@/lib/tes'
 import { errorMessage, formatBytes } from '@/lib/utils'
 import {
@@ -43,9 +43,6 @@ import {
   X,
 } from '@lucide/vue'
 
-/** The kernel folder the bucket is mounted under; only it can be written from here. */
-const DATA_FOLDER = NOTEBOOK_DATA_PREFIX.replace(/\/$/, '')
-const OUTSIDE_DATA = `Only ${DATA_FOLDER}/ is stored in the bucket`
 const ONE_TO_RENAME = 'Select one item to rename'
 const TOO_LARGE = `Larger than ${formatBytes(SCRATCH_READ_LIMIT_BYTES)}, so the kernel cannot hand it out`
 /** How often a queued copy is asked for its progress. */
@@ -87,6 +84,11 @@ const { notebook, session } = injectNotebook()
 const s3 = useS3()
 const files = useSessionFiles(session)
 
+/** The kernel folder the bucket is mounted under; only it can be written from here. */
+const mount = computed(() => notebookMount(notebook.meta.value))
+const dataFolder = computed(() => mountFolder(mount.value))
+const outsideData = computed(() => `Only ${dataFolder.value}/ is stored in the bucket`)
+
 /** The step in flight, shown with a spinner while the panel is busy. */
 const note = ref<string | null>(null)
 
@@ -115,7 +117,7 @@ function shortPath(path: string): string {
 }
 
 /** The folder a staging dialog was opened from. */
-const target = ref(DATA_FOLDER)
+const target = ref(dataFolder.value)
 const addOpen = ref(false)
 /** Copies the picks instead of linking them; the dialog's toggle. */
 const copyMode = ref(false)
@@ -167,7 +169,7 @@ function current() {
   return () => !disposed && generation === notebook.generation.value && jobId === session.jobId.value
 }
 
-watch([notebook.generation, session.jobId], () => {
+watch([notebook.generation, session.jobId, dataFolder], () => {
   staging.value = false
   stopPolling()
   pending.value = []
@@ -176,7 +178,7 @@ watch([notebook.generation, session.jobId], () => {
   copyBusy.value = false
   busy.value = false
   events.value = []
-  target.value = DATA_FOLDER
+  target.value = dataFolder.value
   dataKeys.value = new Set()
   creating.value = null
   renaming.value = null
@@ -202,11 +204,25 @@ function refreshTree(folder?: string) {
 }
 
 function linkedRow(row: TreeRow): boolean {
-  return row.kind === 'file' && (justLinked.value.has(row.path) || references.keyIsReferenced(row.path))
+  if (row.kind !== 'file' || !inData(row.path)) return false
+  const key = keyOf(row.path)
+  return justLinked.value.has(key) || references.keyIsReferenced(key)
 }
 
 function inData(path: string): boolean {
-  return path === DATA_FOLDER || path.startsWith(`${DATA_FOLDER}/`)
+  return path === dataFolder.value || path.startsWith(`${dataFolder.value}/`)
+}
+
+/** The bucket key of a kernel path below the mount; the mount root is the prefix itself. */
+function keyOf(path: string): string {
+  const inside = path === dataFolder.value ? '' : path.slice(dataFolder.value.length + 1)
+  return `${mount.value.prefix}${inside}`
+}
+
+/** The listing prefix of a kernel folder below the mount. */
+function prefixOf(folder: string): string {
+  const key = keyOf(folder)
+  return key && !key.endsWith('/') ? `${key}/` : key
 }
 
 const root = computed(() => files.directory(''))
@@ -249,7 +265,7 @@ const crumbFolder = computed(() => {
   return row.kind === 'dir' ? row.path : parentPath(row.path) ?? ''
 })
 /** Where the header's add button puts files: the shown folder when it is data. */
-const addFolder = computed(() => (inData(crumbFolder.value) ? crumbFolder.value : DATA_FOLDER))
+const addFolder = computed(() => (inData(crumbFolder.value) ? crumbFolder.value : dataFolder.value))
 const crumbs = computed(() => {
   const names = crumbFolder.value ? crumbFolder.value.split('/') : []
   return [{ path: '', name: 'work' }, ...names.map((name, index) => ({ path: names.slice(0, index + 1).join('/'), name }))]
@@ -276,13 +292,13 @@ function validName(name: string): boolean {
 }
 
 function stageReason(path: string): string | null {
-  if (!inData(path)) return OUTSIDE_DATA
+  if (!inData(path)) return outsideData.value
   return session.live.value ? null : 'The kernel is starting'
 }
 
 function copyReason(row: TreeRow): string | null {
   if (inData(row.path)) return null
-  if (row.kind === 'dir') return OUTSIDE_DATA
+  if (row.kind === 'dir') return outsideData.value
   return row.bytes < SCRATCH_READ_LIMIT_BYTES ? null : TOO_LARGE
 }
 
@@ -359,7 +375,7 @@ function targets(row: TreeRow): TreeRow[] {
 }
 
 function deleteReason(list: TreeRow[]): string | null {
-  return list.every((row) => inData(row.path)) ? null : OUTSIDE_DATA
+  return list.every((row) => inData(row.path)) ? null : outsideData.value
 }
 
 function askDelete(row: TreeRow) {
@@ -498,7 +514,7 @@ async function loadDataKeys() {
   if (!bucket.value) return
   const active = current()
   try {
-    const page = await s3.listObjects(bucket.value, `${target.value}/`)
+    const page = await s3.listObjects(bucket.value, prefixOf(target.value))
     if (!active()) return
     dataKeys.value = new Set(page.objects.map((object) => object.key))
   } catch {
@@ -535,7 +551,7 @@ async function commitFolder() {
   if (folder === null || !validName(name)) return
   const active = current()
   try {
-    await s3.createFolder(bucket.value, `${folder}/`, name)
+    await s3.createFolder(bucket.value, prefixOf(folder), name)
     if (!active()) return
     refreshTree(folder)
   } catch (cause) {
@@ -560,7 +576,7 @@ async function commitRename() {
 async function folderKeys(row: TreeRow, verb: string): Promise<string[] | null> {
   const active = current()
   try {
-    const listing = await s3.listObjectsRecursive(bucket.value, `${row.path}/`, FOLDER_LIMIT)
+    const listing = await s3.listObjectsRecursive(bucket.value, prefixOf(row.path), FOLDER_LIMIT)
     if (!active()) return null
     if (listing.truncated) {
       record('error', `${row.name}/ holds more than ${FOLDER_LIMIT} files. ${verb} a smaller folder.`)
@@ -583,14 +599,14 @@ async function relocate(source: TreeRow, dest: string, done: string): Promise<bo
       ? `Renaming ${source.name}…`
       : `Moving ${source.name} to ${shortPath(parentPath(dest) ?? '')}/…`
   try {
-    const keys = source.kind === 'dir' ? await folderKeys(source, 'Move') : [source.path]
+    const keys = source.kind === 'dir' ? await folderKeys(source, 'Move') : [keyOf(source.path)]
     if (!keys) return false
     if (!keys.length) {
       record('error', `${source.name}/ holds no files.`)
       return false
     }
     for (const key of keys) {
-      await s3.copyObject({ bucket: bucket.value, key }, bucket.value, `${dest}${key.slice(source.path.length)}`)
+      await s3.copyObject({ bucket: bucket.value, key }, bucket.value, `${keyOf(dest)}${key.slice(keyOf(source.path).length)}`)
       if (!active()) return false
     }
     for (const key of keys) {
@@ -621,11 +637,11 @@ async function remove(list: TreeRow[]) {
     for (const row of list) {
       if (row.kind === 'dir') {
         if (!(await folderKeys(row, 'Delete'))) return
-        const result = await s3.deletePrefix(bucket.value, `${row.path}/`)
+        const result = await s3.deletePrefix(bucket.value, prefixOf(row.path))
         if (!active()) return
         if (result.errors.length) record('error', `${countFiles(result.errors.length)} could not be deleted: ${result.errors[0].message}`)
       } else {
-        await s3.deleteObject(bucket.value, row.path)
+        await s3.deleteObject(bucket.value, keyOf(row.path))
         if (!active()) return
       }
       gone.push(row.path)
@@ -650,7 +666,7 @@ async function upload(folder: string, list: File[]) {
   try {
     for (const file of list) {
       note.value = `Uploading ${done + 1} of ${countFiles(list.length)} to ${shortPath(folder)}/…`
-      await s3.uploadObject(bucket.value, joinPath(folder, file.name), file).promise
+      await s3.uploadObject(bucket.value, keyOf(joinPath(folder, file.name)), file).promise
       if (!active()) return
       done += 1
     }
@@ -675,7 +691,7 @@ async function download(path: string, name: string) {
     if (inData(path)) {
       // The bucket serves any size, a linked file included; the name travels
       // in the response's Content-Disposition.
-      const url = await s3.downloadUrl(bucket.value, path, undefined, undefined, name)
+      const url = await s3.downloadUrl(bucket.value, keyOf(path), undefined, undefined, name)
       if (!active()) return
       const link = document.createElement('a')
       link.href = url
@@ -708,13 +724,13 @@ async function stage(entry: TesDataRefEntry) {
       ? (() => {
           const parsed = parseS3Url(entry.url)
           return parsed
-            ? [{ bucket: parsed.bucket, key: parsed.key, dest_key: joinPath(folder, entry.name), strategy }]
+            ? [{ bucket: parsed.bucket, key: parsed.key, dest_key: keyOf(joinPath(folder, entry.name)), strategy }]
             : []
         })()
       : entry.files.map((file) => ({
           bucket: entry.bucket,
           key: file.key,
-          dest_key: joinPath(folder, `${entry.name}/${file.name}`),
+          dest_key: keyOf(joinPath(folder, `${entry.name}/${file.name}`)),
           strategy,
         }))
   await submitInputs(items, folder, cellId)
@@ -723,8 +739,8 @@ async function stage(entry: TesDataRefEntry) {
 /** Copies a linked file into the workspace, so reads stop streaming from the source. */
 async function stageCopy(row: TreeRow) {
   await submitInputs(
-    [{ bucket: bucket.value, key: row.path, dest_key: row.path, strategy: 'snapshot' }],
-    parentPath(row.path) ?? DATA_FOLDER,
+    [{ bucket: bucket.value, key: keyOf(row.path), dest_key: keyOf(row.path), strategy: 'snapshot' }],
+    parentPath(row.path) ?? dataFolder.value,
     notebook.activeCellId.value,
   )
 }
@@ -743,7 +759,7 @@ async function submitInputs(items: StagedInputRequest[], folder: string, cellId:
       pending.value.push({
         jobId: queued.job_id,
         destKey: queued.dest_key,
-        name: queued.dest_key.slice(folder.length + 1),
+        name: queued.dest_key.slice(prefixOf(folder).length),
         folder,
         cellId,
         sourceNodeId: queued.source_node_id ?? '',
@@ -833,7 +849,7 @@ async function startCopy(list: TreeRow[]) {
   if (!list.length || list.some((row) => row.kind === 'note') || copyReasonAll(list)) return
   const sources: CopySource[] = []
   for (const row of list) {
-    let keys = inData(row.path) ? [row.path] : []
+    let keys = inData(row.path) ? [keyOf(row.path)] : []
     if (row.kind === 'dir') {
       const listed = await folderKeys(row, 'Copy')
       if (!listed) return
@@ -852,12 +868,12 @@ async function startCopy(list: TreeRow[]) {
 async function copyOne(source: CopySource, destination: { bucket: string; prefix: string }, active: () => boolean) {
   if (source.kind === 'dir') {
     for (const key of source.keys) {
-      const relative = key.slice(source.path.length + 1)
+      const relative = key.slice(prefixOf(source.path).length)
       await s3.copyObject({ bucket: bucket.value, key }, destination.bucket, `${destination.prefix}${source.name}/${relative}`)
       if (!active()) return
     }
   } else if (source.keys.length) {
-    await s3.copyObject({ bucket: bucket.value, key: source.path }, destination.bucket, `${destination.prefix}${source.name}`)
+    await s3.copyObject({ bucket: bucket.value, key: keyOf(source.path) }, destination.bucket, `${destination.prefix}${source.name}`)
   } else {
     if (!session.jobId.value) return
     const blob = await readScratch(session.jobId.value, source.path, session.client.value)
@@ -1043,13 +1059,13 @@ async function copyTo(destination: { bucket: string; prefix: string }) {
       </DropdownMenuTrigger>
       <DropdownMenuContent v-if="menuRow" align="start" class="min-w-[12rem]" @close-auto-focus="(e: Event) => e.preventDefault()">
         <template v-if="menuRow.kind === 'dir'">
-          <DropdownMenuItem class="text-xs" :disabled="!inData(menuRow.path)" :title="inData(menuRow.path) ? undefined : OUTSIDE_DATA" @select="startFolder(menuRow.path)">
+          <DropdownMenuItem class="text-xs" :disabled="!inData(menuRow.path)" :title="inData(menuRow.path) ? undefined : outsideData" @select="startFolder(menuRow.path)">
             <FolderPlus class="size-3.5 text-muted-foreground" /> New folder
           </DropdownMenuItem>
           <DropdownMenuItem class="text-xs" :disabled="Boolean(stageReason(menuRow.path)) || staging" :title="stageReason(menuRow.path) ?? undefined" @select="openAdd(menuRow.path)">
             <Plus class="size-3.5 text-muted-foreground" /> Add files from buckets
           </DropdownMenuItem>
-          <DropdownMenuItem class="text-xs" :disabled="!inData(menuRow.path)" :title="inData(menuRow.path) ? undefined : OUTSIDE_DATA" @select="openImport(menuRow.path)">
+          <DropdownMenuItem class="text-xs" :disabled="!inData(menuRow.path)" :title="inData(menuRow.path) ? undefined : outsideData" @select="openImport(menuRow.path)">
             <CloudDownload class="size-3.5 text-muted-foreground" /> Import from connector
           </DropdownMenuItem>
         </template>
@@ -1064,7 +1080,7 @@ async function copyTo(destination: { bucket: string; prefix: string }) {
         <DropdownMenuItem class="text-xs" :disabled="Boolean(copyReasonAll(menuRows)) || copyBusy" :title="copyReasonAll(menuRows) ?? undefined" @select="startCopy(menuRows)">
           <Copy class="size-3.5 text-muted-foreground" /> {{ menuCount > 1 ? `Copy ${menuCount} items to bucket` : 'Copy to bucket' }}
         </DropdownMenuItem>
-        <DropdownMenuItem class="text-xs" :disabled="menuCount > 1 || !inData(menuRow.path) || busy" :title="menuCount > 1 ? ONE_TO_RENAME : inData(menuRow.path) ? undefined : OUTSIDE_DATA" @select="startRename(menuRow)">
+        <DropdownMenuItem class="text-xs" :disabled="menuCount > 1 || !inData(menuRow.path) || busy" :title="menuCount > 1 ? ONE_TO_RENAME : inData(menuRow.path) ? undefined : outsideData" @select="startRename(menuRow)">
           <Pencil class="size-3.5 text-muted-foreground" /> Rename
         </DropdownMenuItem>
         <DropdownMenuItem class="text-xs" :disabled="Boolean(deleteReason(menuRows)) || busy" :title="deleteReason(menuRows) ?? undefined" @select="askDelete(menuRow)">
@@ -1073,13 +1089,13 @@ async function copyTo(destination: { bucket: string; prefix: string }) {
       </DropdownMenuContent>
     </DropdownMenu>
 
-    <TesDataRefDialog v-model:open="addOpen" v-model:copy="copyMode" mode="input" :destination="`${bucket}/${target}/`" @add="stage" />
+    <TesDataRefDialog v-model:open="addOpen" v-model:copy="copyMode" mode="input" :destination="`${bucket}/${prefixOf(target)}`" @add="stage" />
 
     <!-- The data manager's own import, pointed at the picked data/ folder. -->
     <AddDataDialog
       v-model:open="importOpen"
       :bucket="bucket"
-      :prefix="`${target}/`"
+      :prefix="prefixOf(target)"
       :group-id="notebook.meta.value?.group_id ?? null"
       :existing-keys="dataKeys"
       @staged="onImported"

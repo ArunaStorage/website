@@ -6,7 +6,6 @@ import { captureOutput } from '@/lib/tes'
 import { quoteCommand, tokenizeCommand } from '@/lib/shellwords'
 import { defaultPlacement, isNativeBlocked, tesFormToExecutionRequest } from '@/lib/nativeSubmit'
 import type { SubmitExecutionRequest } from '@/lib/jobs'
-import { NOTEBOOK_DATA_PREFIX } from './document'
 
 export interface PipelineOutputRow {
   /** Path inside the container the file is written to. */
@@ -43,9 +42,10 @@ export function emptyPipelineDraft(): PipelineDraft {
   return { name: '', image: '', command: '', cpuCores: '1', ramGb: '2', inputs: [], outputs: [] }
 }
 
-export function defaultOutputKey(path: string): string {
+/** Where a pipeline output lands by default: the mounted bucket folder. */
+export function defaultOutputKey(path: string, prefix: string): string {
   const file = path.split('/').filter(Boolean).pop() ?? 'result'
-  return `${NOTEBOOK_DATA_PREFIX}${file}`
+  return `${prefix}${file}`
 }
 
 /** Where a picked object is mounted inside the container. */

@@ -130,6 +130,7 @@ describe('createNotebook', () => {
     await notebook.load()
     expect(notebook.cells.value[0].source).toBe('print(1)')
     expect(notebook.meta.value?.runtime).toBe('deno-notebook')
+    expect(notebook.meta.value?.mount).toBeUndefined()
     expect(notebook.isNew.value).toBe(false)
   })
 
@@ -140,6 +141,8 @@ describe('createNotebook', () => {
     expect(notebook.isNew.value).toBe(true)
     expect(notebook.cells.value).toHaveLength(1)
     expect(notebook.meta.value).toMatchObject({ runtime: 'python-notebook', workspace_bucket: 'lab-data' })
+    // A new notebook mirrors its whole bucket; a stored one keeps what it ran with.
+    expect(notebook.meta.value?.mount).toEqual({ prefix: '', path: '/work/data' })
     expect(notebook.loadError.value).toBeNull()
   })
 

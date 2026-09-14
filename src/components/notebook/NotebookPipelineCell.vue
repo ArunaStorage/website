@@ -18,6 +18,7 @@ import {
   pipelineRequest,
   pipelineSource,
 } from '@/lib/notebook/pipeline'
+import { notebookMount } from '@/lib/notebook/document'
 import { follow, POLL_ACTIVE_MS } from '@/lib/poll'
 import { jobFacts, liveJob, noteJob } from '@/lib/assistant/jobLive'
 import { parseS3Url, type TesDataRefEntry } from '@/lib/tes'
@@ -108,7 +109,7 @@ function addInput(entry: TesDataRefEntry) {
 }
 
 function addOutput() {
-  draft.value.outputs.push({ path: '/work/out/result.txt', key: defaultOutputKey('result.txt') })
+  draft.value.outputs.push({ path: '/work/out/result.txt', key: defaultOutputKey('result.txt', notebookMount(notebook.meta.value).prefix) })
 }
 
 async function submit() {

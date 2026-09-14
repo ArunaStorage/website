@@ -25,7 +25,8 @@ import { endSession } from '@/lib/notebook/session'
 import { listRunningSessions, type RunningSession } from '@/lib/notebook/sessions'
 import { errorMessage, relativeTime } from '@/lib/utils'
 import { SESSION_RUNTIMES, dependencyFileName, dependencyKind } from '@/lib/notebook/runtimes'
-import type { NotebookDependencies as DependencySpec } from '@/lib/notebook/nbformat'
+import type { NotebookDependencies as DependencySpec, NotebookMount } from '@/lib/notebook/nbformat'
+import { SESSION_WORKDIR, STORED_MOUNT, mountFolder, notebookMount } from '@/lib/notebook/document'
 import { DEFAULT_KERNEL_CPU, DEFAULT_KERNEL_RAM, sessionProblems, sessionStartDraft } from '@/lib/notebook/submit'
 import { toneVariant, type StateTone } from '@/lib/stateBadge'
 import { DEFAULT_SESSION_IDLE_AFTER_MS } from '@/lib/computeAdmin'
@@ -267,6 +268,21 @@ function setPlacement(patch: { node?: string; executor_kind?: string }) {
   notebook.patchMeta({ placement: { ...(meta.value?.placement ?? {}), ...patch } })
 }
 
+// The fields keep what was typed; the mount is cleaned when it is read.
+const mount = computed(() => notebookMount(meta.value))
+const bucketFolder = computed({
+  get: () => meta.value?.mount?.prefix ?? STORED_MOUNT.prefix.replace(/\/$/, ''),
+  set: (value: string) => setMount({ prefix: value }),
+})
+const kernelFolder = computed({
+  get: () => mountFolder({ ...mount.value, path: meta.value?.mount?.path ?? STORED_MOUNT.path }),
+  set: (value: string) => setMount({ path: `${SESSION_WORKDIR}/${value.replace(/^\/+/, '')}` }),
+})
+
+function setMount(patch: Partial<NotebookMount>) {
+  notebook.patchMeta({ mount: { ...mount.value, ...patch } })
+}
+
 async function start(restart = false) {
   const current = meta.value
   if (!current) return
@@ -475,6 +491,16 @@ defineExpose({ runNotebook })
             <span class="text-xs font-medium text-foreground">Workspace bucket</span>
             <Input :model-value="meta?.workspace_bucket ?? ''" disabled aria-label="Workspace bucket" />
             <span class="text-[11px] text-muted-foreground">The notebook and its files live here.</span>
+          </label>
+          <label class="space-y-1">
+            <span class="text-xs font-medium text-foreground">Bucket folder</span>
+            <Input v-model="bucketFolder" placeholder="Whole bucket" aria-label="Bucket folder" class="font-mono text-xs" :disabled="session.running.value" />
+            <span class="text-[11px] text-muted-foreground">Only this folder of the bucket is mirrored into the kernel.</span>
+          </label>
+          <label class="space-y-1">
+            <span class="text-xs font-medium text-foreground">Kernel folder</span>
+            <Input v-model="kernelFolder" placeholder="data" aria-label="Kernel folder" class="font-mono text-xs" :disabled="session.running.value" />
+            <span class="text-[11px] text-muted-foreground">Where the bucket appears below {{ SESSION_WORKDIR }}. Files written there land in the bucket.</span>
           </label>
         </div>
 

@@ -2,6 +2,7 @@ import { defineComponent, h, ref } from 'vue'
 import * as VueRuntime from 'vue'
 import { describe, expect, it, vi } from 'vitest'
 import * as Pipeline from '@/lib/notebook/pipeline'
+import * as Document from '@/lib/notebook/document'
 import { newCell } from '@/lib/notebook/nbformat'
 import * as Tes from '@/lib/tes'
 import { button, click, compileClientComponent, content, moduleDefault, mountApp } from '@/test/clientRender'
@@ -32,6 +33,7 @@ async function render() {
     '@/composables/useAruna': { useAruna: () => ({ apiBaseUrl: ref('/api/v1'), authToken: ref('token') }) },
     '@/lib/jobs': { submitJob, getJob, submitErrorMessage: (cause: Error) => cause.message },
     '@/lib/notebook/pipeline': Pipeline,
+    '@/lib/notebook/document': Document,
     '@/lib/tes': Tes,
     '@/lib/poll': { POLL_ACTIVE_MS: 3000, follow: (run: () => Promise<void>) => { poll = run; return () => {} } },
     '@/lib/assistant/jobLive': { liveJob: () => undefined, noteJob, jobFacts: (job: unknown) => job },
