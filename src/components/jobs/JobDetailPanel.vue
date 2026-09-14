@@ -15,7 +15,7 @@ import JobFamilySection from '@/components/jobs/JobFamilySection.vue'
 import JobReportPanel from '@/components/jobs/JobReportPanel.vue'
 import JobStateBadge from '@/components/jobs/JobStateBadge.vue'
 import { useJobDetail } from '@/composables/useJobs'
-import { formatJobProgress, isTerminalJobState, jobKindLabel, jobProgressPercent } from '@/lib/jobs'
+import { formatJobProgress, isTerminalJobState, jobLabel, jobProgressPercent } from '@/lib/jobs'
 import { relativeTime, truncateMiddle } from '@/lib/utils'
 import { Ban, History } from '@lucide/vue'
 
@@ -71,7 +71,7 @@ async function confirmCancel() {
       <DialogTitle class="sr-only">Details</DialogTitle>
       <div v-if="job" class="space-y-2">
         <div class="flex flex-wrap items-center gap-2">
-          <h2 class="font-display text-lg font-semibold text-aruna-navy">{{ jobKindLabel(job.kind) }}</h2>
+          <h2 class="font-display text-lg font-semibold text-aruna-navy">{{ jobLabel(job) }}</h2>
           <JobStateBadge :state="job.state" />
           <Badge v-if="job.cancel_requested && !terminal" variant="warn">cancel requested</Badge>
         </div>

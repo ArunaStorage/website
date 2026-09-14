@@ -146,6 +146,8 @@ export interface JobStatusResponse {
   // WorkspaceMode::name(); always served. "none" means the run worked in no
   // bucket of its own, which is what a run the portal submits reports.
   workspace_mode: string
+  /** Present for a notebook session: the catalog runtime it runs. */
+  session_runtime?: string
   // This node spent its attempts without a job-specific verdict; not a proven
   // failure. Served with a default, so an older node omits it.
   locally_exhausted?: boolean
@@ -722,6 +724,11 @@ const JOB_KIND_LABEL: Record<string, string> = {
   harvest: 'Harvest',
   mint_persistent_id: 'Mint persistent id',
   storage_purge: 'Permanent deletion',
+}
+
+/** What a job list calls the row: a notebook session by name, else its kind. */
+export function jobLabel(job: Pick<JobStatusResponse, 'kind' | 'session_runtime'>): string {
+  return job.session_runtime !== undefined ? 'Notebook session' : jobKindLabel(job.kind)
 }
 
 // `kind` stays open for kinds the backend adds, so an unknown one reads as its

@@ -23,6 +23,7 @@ import { useRefresh } from '@/composables/useRefresh'
 import { useFirstPaint } from '@/composables/useFirstPaint'
 import { errorMessage, formatDuration, formatResourceGb, relativeTime, truncateMiddle } from '@/lib/utils'
 import { follow, onWake } from '@/lib/poll'
+import { sessionRuntime } from '@/lib/notebook/submit'
 import {
   TES_GROUP_TAG,
   isActiveTesState,
@@ -441,7 +442,10 @@ onUnmounted(() => {
               <div v-if="task.id" class="font-mono text-[11px] text-muted-foreground" :title="task.id">{{ truncateMiddle(task.id) }}</div>
             </td>
             <td class="px-5 py-2.5">
-              <TaskStateBadge :state="task.state" />
+              <div class="flex flex-wrap items-center gap-1.5">
+                <TaskStateBadge :state="task.state" />
+                <Badge v-if="sessionRuntime(task.tags) !== null" variant="sky" size="sm" title="An interactive notebook kernel, not a batch run">Notebook</Badge>
+              </div>
               <TesPlacementTags :tags="task.tags" compact class="mt-1" />
             </td>
             <td class="hidden px-5 py-2.5 text-[11px] text-muted-foreground md:table-cell">

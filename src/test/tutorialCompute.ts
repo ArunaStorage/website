@@ -181,6 +181,7 @@ const cardModules = {
   ...ui,
   '@/composables/useCustomRun': CustomRun,
   '@/lib/tes': TesLib,
+  '@/lib/notebook/submit': { sessionRuntime: () => null },
   '@/lib/jobs': JobsLib,
   '@/lib/utils': Utils,
   '@/lib/runPaths': RunPaths,
@@ -235,6 +236,7 @@ const TesDataRefDialog = compileClientComponent(url('components/compute/TesDataR
   '@/composables/useAruna': arunaModule,
   '@/composables/useGroupSelection': { activeGroupId: ref('') },
   '@/lib/tes': TesLib,
+  '@/lib/notebook/submit': { sessionRuntime: () => null },
   '@/lib/utils': Utils,
 })
 const RequestDialog = compileClientComponent(url('components/compute/run/RequestDialog.vue'), {
@@ -276,6 +278,7 @@ const ComputeSubmitView = compileClientComponent(url('views/ComputeSubmitView.vu
   '@/composables/useAssistantRunForm': { provideRunFormBridge: () => {} },
   '@/lib/runFormBridge': { createRunFormBridge: () => ({}) },
   '@/lib/tes': TesLib,
+  '@/lib/notebook/submit': { sessionRuntime: () => null },
   '@/lib/utils': Utils,
   '@/lib/workspaces': Workspaces,
   '@/lib/nativeSubmit': NativeSubmit,
@@ -323,6 +326,7 @@ const TaskDetailPanel = compileClientComponent(url('components/compute/TaskDetai
   '@/lib/quickRuntimes': QuickRuntimes,
   '@/lib/jobs': JobsLib,
   '@/lib/tes': TesLib,
+  '@/lib/notebook/submit': { sessionRuntime: () => null },
   '@/lib/utils': Utils,
 })
 const TutorialComputeView = compileClientComponent(url('views/TutorialComputeView.vue'), {

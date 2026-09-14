@@ -18,7 +18,7 @@ import {
   writeResumePoint,
   writeWorkingCopy,
 } from './document'
-import { sessionSubmitRequest, sessionProblems } from './submit'
+import { sessionRuntime, sessionSubmitRequest, sessionProblems } from './submit'
 import { memoryStorage } from '@/test/storage'
 
 
@@ -147,6 +147,15 @@ describe('notebook mount', () => {
     expect(notebookMount({ mount: { prefix: '', path: '' } })).toEqual({ prefix: '', path: '/work/data' })
     expect(notebookMount({ mount: { prefix: 'x', path: '/work/' } })).toEqual({ prefix: 'x/', path: '/work/data' })
     expect(mountFolder({ prefix: '', path: '/work/project/raw' })).toBe('project/raw')
+  })
+})
+
+describe('sessionRuntime', () => {
+  it('reads the runtime off a session job and ignores plain runs', () => {
+    expect(sessionRuntime({ 'aruna-engine.org/session': 'notebook', 'aruna-engine.org/session-runtime': 'python-notebook' })).toBe('python-notebook')
+    expect(sessionRuntime({ 'aruna-engine.org/session': 'notebook' })).toBe('')
+    expect(sessionRuntime({ 'aruna-engine.org/session-runtime': 'python-notebook' })).toBeNull()
+    expect(sessionRuntime(undefined)).toBeNull()
   })
 })
 

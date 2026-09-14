@@ -16,6 +16,14 @@ export const SESSION_TAG = 'aruna-engine.org/session'
 export const SESSION_TAG_VALUE = 'notebook'
 /** Placement label that pins a run to one node. */
 export const NODE_LABEL_KEY = 'aruna-engine.org/node'
+/** The catalog runtime the node recorded on a session job. */
+export const SESSION_RUNTIME_TAG = 'aruna-engine.org/session-runtime'
+
+/** The runtime of a notebook session job read from its tags; null for a plain run. */
+export function sessionRuntime(tags: Record<string, string> | undefined): string | null {
+  if (tags?.[SESSION_TAG] !== SESSION_TAG_VALUE) return null
+  return tags[SESSION_RUNTIME_TAG] ?? ''
+}
 
 export interface SessionSubmitDraft {
   groupId: string

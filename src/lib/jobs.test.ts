@@ -9,6 +9,7 @@ import {
   isReportAbsent,
   isReportCursorConflict,
   isSubmitRetryable,
+  jobLabel,
   placementVerdict,
   reportPendingState,
   submitErrorMessage,
@@ -365,5 +366,13 @@ describe('native job submission', () => {
 
     expect(isNativeSubmitUnsupported(error)).toBe(true)
     expect(isSubmitRetryable(error)).toBe(false)
+  })
+})
+
+describe('job label', () => {
+  it('names a notebook session and falls back to the kind', () => {
+    expect(jobLabel({ kind: 'execution', session_runtime: 'python-notebook' })).toBe('Notebook session')
+    expect(jobLabel({ kind: 'execution' })).toBe('Execution')
+    expect(jobLabel({ kind: 'copy_object' })).toBe('Copy object')
   })
 })

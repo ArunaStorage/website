@@ -18,7 +18,7 @@ import { useRefresh } from '@/composables/useRefresh'
 import { useFirstPaint } from '@/composables/useFirstPaint'
 import {
   formatJobProgress,
-  jobKindLabel,
+  jobLabel,
   jobProgressPercent,
   type JobState,
   type JobStatusResponse,
@@ -178,10 +178,10 @@ onMounted(() => void list.load())
               <button
                 type="button"
                 class="w-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-                :aria-label="`Open ${jobKindLabel(job.kind)} ${job.job_id}`"
+                :aria-label="`Open ${jobLabel(job)} ${job.job_id}`"
                 @click="openJob(job)"
               >
-                <span class="font-medium text-foreground">{{ jobKindLabel(job.kind) }}</span>
+                <span class="font-medium text-foreground">{{ jobLabel(job) }}</span>
                 <span class="block font-mono text-[11px] text-muted-foreground" :title="job.job_id">{{ truncateMiddle(job.job_id) }}</span>
               </button>
             </td>

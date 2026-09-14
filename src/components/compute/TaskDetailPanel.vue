@@ -45,6 +45,7 @@ import {
   type TesState,
   type TesTask,
 } from '@/lib/tes'
+import { sessionRuntime } from '@/lib/notebook/submit'
 import { objectHref } from '@/lib/assistant/objectLinks'
 import { asyncChunkError } from '@/lib/chunk-recovery'
 import { errorMessage, formatBytes, formatDuration, formatResourceGb, relativeTime, truncateMiddle } from '@/lib/utils'
@@ -625,7 +626,11 @@ async function confirmDelete() {
           :state="task.state"
           :tags="task.tags"
           :description="task.description"
-        />
+        >
+          <template v-if="sessionRuntime(task.tags) !== null" #badges>
+            <Badge variant="sky" size="sm" title="An interactive notebook kernel, not a batch run">Notebook session</Badge>
+          </template>
+        </TaskHeader>
         <div class="flex shrink-0 items-center gap-2">
           <RefreshButton :busy="refreshing" sr-label="Refresh this run" @click="onRefresh" />
           <AskAiButton :prompt="askPrompt" :subject="`run ${taskId}`" icon-only />

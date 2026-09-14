@@ -299,6 +299,7 @@ function taskPanel(getTask: unknown, getJob: unknown): Component {
     '@/lib/jobs': Jobs,
     '@/lib/poll': Poll,
     '@/lib/tes': Tes,
+    '@/lib/notebook/submit': { sessionRuntime: () => null },
     '@/lib/utils': Utils,
   })
 }
@@ -729,6 +730,7 @@ describe('distributed job detail components', () => {
       '@/components/ui/NodeLabel.vue': moduleDefault(NodeLabelStub),
       '@/lib/jobs': Jobs,
       '@/lib/tes': Tes,
+      '@/lib/notebook/submit': { sessionRuntime: () => null },
       '@/lib/utils': Utils,
     }
     const TesPlacementTags = compileClientComponent(
