@@ -43,6 +43,13 @@ const SearchBoxStub = defineComponent({
   emits: ['update:modelValue', 'select'],
   setup: (props) => () => h('input', { 'aria-label': 'Target bucket', value: props.modelValue }),
 })
+// The real Switch is a radix control; the stub toggles on click and shows its label.
+const SwitchStub = defineComponent({
+  props: { checked: Boolean, disabled: Boolean },
+  emits: ['update:checked'],
+  setup: (props, { attrs, emit }) => () =>
+    h('button', { disabled: props.disabled, onClick: () => emit('update:checked', !props.checked) }, String(attrs['aria-label'] ?? '')),
+})
 const DocsLinkStub = defineComponent({
   props: { section: String, icon: Boolean },
   setup: (props) => () => h('a', { 'data-section': props.section, 'data-icon': props.icon }),
@@ -63,7 +70,7 @@ const dialog = compileClientComponent(new URL('./SyncBucketDialog.vue', import.m
   '@/components/ui/Notice.vue': moduleDefault(Slotted('aside')),
   '@/components/ui/Spinner.vue': moduleDefault(Slotted('span')),
   '@/components/ui/Select.vue': moduleDefault(SelectStub),
-  '@/components/ui/Switch.vue': moduleDefault(Slotted('button')),
+  '@/components/ui/Switch.vue': moduleDefault(SwitchStub),
   '@/components/ui/Dialog.vue': moduleDefault(Slotted('div')),
   '@/components/ui/DialogContent.vue': moduleDefault(Slotted('div')),
   '@/components/ui/DialogHeader.vue': moduleDefault(Slotted('header')),
@@ -145,6 +152,38 @@ describe('sync bucket dialog', () => {
 
     expect(button(root, 'Leave those objects out').props['aria-pressed']).toBe(true)
     expect(createSyncRelationship.mock.calls[0][0]).toMatchObject({ mode: 'continuous', reference_handling: 'skip' })
+  })
+
+  it('creates the sync back on the target node', async () => {
+    const root = await render()
+
+    await click(button(root, 'Node B'))
+    await click(button(root, 'Sync in both directions'))
+    await click(button(root, 'Sync now'))
+
+    expect(createSyncRelationship).toHaveBeenCalledTimes(2)
+    expect(createSyncRelationship.mock.calls[1]).toEqual([
+      {
+        source: { bucket: 'reef-survey' },
+        target: { node_id: 'node-a', bucket: 'reef-survey' },
+        mode: 'once',
+        reference_handling: 'materialize',
+        replicate_deletes: false,
+      },
+      { baseUrl: 'http://b/api/v1' },
+    ])
+  })
+
+  it('keeps the dialog open when only the sync back fails', async () => {
+    const root = await render()
+    createSyncRelationship.mockResolvedValueOnce({ id: 's-1' }).mockRejectedValueOnce(new Error('boom'))
+
+    await click(button(root, 'Node B'))
+    await click(button(root, 'Sync in both directions'))
+    await click(button(root, 'Sync now'))
+
+    expect(content(root)).toContain('The sync to Node B was created, but the sync back failed: boom')
+    expect(button(root, 'Sync now').props.disabled).toBe(false)
   })
 
   it('blocks the same bucket on the same node', async () => {

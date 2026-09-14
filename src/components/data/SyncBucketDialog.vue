@@ -57,6 +57,18 @@ const sourceUnreachable = computed(() => pullMode.value && !sourceApiBase.value)
 const targetUnreachable = computed(
   () => Boolean(targetNodeId.value) && realmNodes.nodeById(targetNodeId.value)?.reachable === false,
 )
+// The sync back is created on the target node: in push mode that node must
+// publish an API URL, in pull mode the connected node creates it itself.
+const reverseBaseUrl = computed(() => {
+  if (pullMode.value) return null
+  const node = realmNodes.nodeById(targetNodeId.value)
+  return node?.isLocal ? null : (node?.apiBase ?? null)
+})
+const reverseUnavailable = computed(() => {
+  if (pullMode.value || !targetNodeId.value) return false
+  const node = realmNodes.nodeById(targetNodeId.value)
+  return !node?.isLocal && !node?.apiBase
+})
 
 const sourcePrefix = ref('')
 const targetNodeId = ref('')
@@ -65,6 +77,7 @@ const targetPrefix = ref('')
 const mode = ref<SyncMode>('once')
 const referenceHandling = ref<SyncReferenceHandling>('materialize')
 const replicateDeletes = ref(false)
+const bothDirections = ref(false)
 const busy = ref(false)
 const error = ref<string | null>(null)
 
@@ -79,6 +92,7 @@ watch(
     mode.value = 'once'
     referenceHandling.value = 'materialize'
     replicateDeletes.value = false
+    bothDirections.value = false
     busy.value = false
     error.value = null
   },
@@ -167,30 +181,59 @@ async function submit() {
   }
   const tgtPrefix = targetPrefix.value.trim()
   if (tgtPrefix) target.prefix = tgtPrefix
+  const request: CreateSyncRelationshipRequest = {
+    source,
+    target,
+    mode: mode.value,
+    reference_handling: mode.value === 'reference' ? 'preserve' : referenceHandling.value,
+    replicate_deletes: replicateDeletes.value,
+  }
   try {
     const relationship = await createSyncRelationship(
-      { source, target, mode: mode.value, reference_handling: mode.value === 'reference' ? 'preserve' : referenceHandling.value, replicate_deletes: replicateDeletes.value },
+      request,
       pullMode.value && sourceApiBase.value ? { baseUrl: sourceApiBase.value } : {},
     )
+    if (bothDirections.value) {
+      let reverse: SyncRelationship
+      try {
+        reverse = await createSyncRelationship(
+          reverseRequest(request),
+          reverseBaseUrl.value ? { baseUrl: reverseBaseUrl.value } : {},
+        )
+      } catch (err) {
+        error.value = `The sync to ${targetNodeLabel.value} was created, but the sync back failed: ${describeError(err)}`
+        return
+      }
+      emit('created', reverse)
+    }
     emit('created', relationship)
     emit('update:open', false)
   } catch (err) {
-    if (err instanceof ApiError) {
-      if (err.status === 409) {
-        error.value = 'This sync relationship already exists.'
-      } else if (err.status === 502) {
-        error.value = 'The target node is unreachable right now, the relationship was not created.'
-      } else if (err.status === 401 || err.status === 403) {
-        error.value = 'You need read access on the source bucket to set up a sync.'
-      } else {
-        error.value = err.message
-      }
-    } else {
-      error.value = errorMessage(err)
-    }
+    error.value = describeError(err)
   } finally {
     busy.value = false
   }
+}
+
+// The sync back swaps the endpoints; its source node is the node it is posted to.
+function reverseRequest(request: CreateSyncRelationshipRequest): CreateSyncRelationshipRequest {
+  const source: CreateSyncRelationshipRequest['source'] = { bucket: request.target.bucket }
+  if (request.target.prefix) source.prefix = request.target.prefix
+  return {
+    ...request,
+    source,
+    target: { node_id: props.sourceNodeId ?? realmNodes.localNodeId.value ?? '', ...request.source },
+  }
+}
+
+function describeError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 409) return 'This sync relationship already exists.'
+    if (err.status === 502) return 'The target node is unreachable right now, the relationship was not created.'
+    if (err.status === 401 || err.status === 403) return 'You need read access on the source bucket to set up a sync.'
+    return err.message
+  }
+  return errorMessage(err)
 }
 </script>
 
@@ -322,6 +365,25 @@ async function submit() {
           </span>
           <Switch :checked="replicateDeletes" @update:checked="(v: boolean) => (replicateDeletes = v)" />
         </label>
+
+        <label class="flex items-center justify-between gap-3 text-xs">
+          <span>
+            <span class="font-medium text-foreground">Sync in both directions</span>
+            <span class="block text-[11px] text-muted-foreground">
+              Also creates the sync back from the target, as a second relationship with the same settings.
+            </span>
+          </span>
+          <Switch
+            :checked="bothDirections"
+            :disabled="reverseUnavailable"
+            aria-label="Sync in both directions"
+            @update:checked="(v: boolean) => (bothDirections = v)"
+          />
+        </label>
+
+        <Notice v-if="reverseUnavailable" tone="warning">
+          {{ targetNodeLabel }} does not publish an API URL, so the sync back cannot be created from here.
+        </Notice>
 
         <Notice v-if="sameEndpoint" tone="warning">
           Source and target are the same bucket and prefix; pick a different node, bucket or prefix.
