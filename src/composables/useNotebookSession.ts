@@ -15,6 +15,7 @@ import {
   openSessionStream,
   runSessionCell,
   sessionAbsent,
+  sessionEnded,
   sessionNotHere,
   type KernelState,
   type SessionCell,
@@ -395,7 +396,12 @@ export function createNotebookSession(notebook: NotebookStore) {
     const active = current()
     ending.value = true
     try {
-      await endSession(jobId.value, client.value)
+      try {
+        await endSession(jobId.value, client.value)
+      } catch (cause) {
+        // A session the node already dropped is stopped, not an error to show.
+        if (!sessionEnded(cause)) throw cause
+      }
       if (!active()) return
       closeStream()
       keepResumePoint.cancel()

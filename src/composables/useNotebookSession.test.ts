@@ -345,6 +345,20 @@ describe('createNotebookSession', () => {
     scope.stop()
   })
 
+  it('treats a session the node already ended as stopped', async () => {
+    const { notebook, session: store, scope } = await setup()
+    notebook.patchMeta({ job_id: '01JOB', executor_node_id: 'node-a' })
+    session.getSessionState.mockResolvedValue(state())
+    await store.attachSaved()
+    session.endSession.mockRejectedValue(new ApiError(409, 'session_ended', 'session_ended'))
+
+    await store.end()
+
+    expect(store.ended.value).toBe(true)
+    expect(store.error.value).toBeNull()
+    scope.stop()
+  })
+
   it('starts a session and remembers it in the notebook', async () => {
     const { notebook, session: store, scope } = await setup()
     jobs.submitJob.mockResolvedValue({ job_id: '01NEW' })

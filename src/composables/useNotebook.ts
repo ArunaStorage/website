@@ -167,6 +167,9 @@ export function createNotebook(bucket: Ref<string>, key: Ref<string>, seed: () =
       }
       isNew.value = missing
       notebook.value = text === null ? emptyNotebook({ ...defaults, mount: NEW_MOUNT }) : parseNotebook(text, defaults)
+      // The bucket was opened as this group; a stored id of a group that is
+      // gone would refuse the kernel start.
+      if (defaults.group_id) notebook.value.metadata.aruna.group_id = defaults.group_id
       // Everything this document does later happens where it was read from.
       loadedFrom = target
       lastSavedMs.value = Date.now()

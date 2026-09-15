@@ -130,6 +130,8 @@ describe('createNotebook', () => {
     await notebook.load()
     expect(notebook.cells.value[0].source).toBe('print(1)')
     expect(notebook.meta.value?.runtime).toBe('deno-notebook')
+    // The group it was opened as wins over a stored id, which may be stale.
+    expect(notebook.meta.value?.group_id).toBe('group-1')
     expect(notebook.meta.value?.mount).toBeUndefined()
     expect(notebook.isNew.value).toBe(false)
   })

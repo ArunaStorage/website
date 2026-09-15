@@ -184,6 +184,11 @@ export function sessionNotHere(error: unknown): string | null {
   return typeof node === 'string' && node ? node : null
 }
 
+/** The session already ended, so an end call has nothing left to do. */
+export function sessionEnded(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409 && error.code === 'session_ended'
+}
+
 /** The session is gone, so the notebook detaches instead of retrying. */
 export function sessionAbsent(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404
