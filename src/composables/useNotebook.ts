@@ -166,10 +166,13 @@ export function createNotebook(bucket: Ref<string>, key: Ref<string>, seed: () =
         keepCopy = unsaved.changed_at_ms > storedMs
       }
       isNew.value = missing
-      notebook.value = text === null ? emptyNotebook({ ...defaults, mount: NEW_MOUNT }) : parseNotebook(text, defaults)
       // The bucket was opened as this group; a stored id of a group that is
       // gone would refuse the kernel start.
-      if (defaults.group_id) notebook.value.metadata.aruna.group_id = defaults.group_id
+      const opened = (doc: Notebook) => {
+        if (defaults.group_id) doc.metadata.aruna.group_id = defaults.group_id
+        return doc
+      }
+      notebook.value = opened(text === null ? emptyNotebook({ ...defaults, mount: NEW_MOUNT }) : parseNotebook(text, defaults))
       // Everything this document does later happens where it was read from.
       loadedFrom = target
       lastSavedMs.value = Date.now()
@@ -179,7 +182,7 @@ export function createNotebook(bucket: Ref<string>, key: Ref<string>, seed: () =
         return
       }
       try {
-        notebook.value = parseNotebook(unsaved.text)
+        notebook.value = opened(parseNotebook(unsaved.text))
         changedAt.value = unsaved.changed_at_ms || Date.now()
         void save()
       } catch {

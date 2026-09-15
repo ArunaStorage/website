@@ -227,7 +227,8 @@ describe('createNotebook', () => {
     const stored = emptyNotebook({ version: 1, runtime: 'python-notebook', workspace_bucket: 'lab-data', group_id: 'group-1' })
     stored.cells[0].source = 'print(1)'
     s3.getObjectText.mockResolvedValue(serializeNotebook(stored))
-    const unsaved = emptyNotebook({ version: 1, runtime: 'python-notebook', workspace_bucket: 'lab-data', group_id: 'group-1' })
+    // The copy carries a stale group; the opened group must win over it too.
+    const unsaved = emptyNotebook({ version: 1, runtime: 'python-notebook', workspace_bucket: 'lab-data', group_id: 'group-2' })
     unsaved.cells[0].source = 'print(99)'
     localStorage.setItem(
       workingCopyKey(copyScope(), 'lab-data', 'notebooks/counts.ipynb'),
@@ -245,6 +246,8 @@ describe('createNotebook', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(s3.putTextObject).toHaveBeenCalledOnce()
     expect(s3.putTextObject.mock.calls[0][2]).toContain('print(99)')
+    expect(s3.putTextObject.mock.calls[0][2]).toContain('"group_id": "group-1"')
+    expect(notebook.meta.value?.group_id).toBe('group-1')
     expect(notebook.dirty.value).toBe(false)
     expect(readWorkingCopy(copyScope(), 'lab-data', 'notebooks/counts.ipynb')).toBeNull()
   })
